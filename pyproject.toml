@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "audio-interleaver"
+version = "0.1.0"
+description = "A desktop WAV interleaver with a chunk-selection crossfader"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy==2.5.1",
+    "PySide6==6.11.1",
+    "sounddevice==0.5.5",
+    "soundfile==0.14.0",
+    "soxr==1.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-qt==4.5.0",
+]
+
+[project.scripts]
+audio-interleaver = "audio_interleaver.ui:main"
+
+[tool.setuptools.packages.find]
+include = ["audio_interleaver*"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+

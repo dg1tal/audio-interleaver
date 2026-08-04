@@ -1,0 +1,241 @@
+"""Audio loading, normalization, slot selection, and offline rendering."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import math
+from pathlib import Path
+from threading import Event
+from typing import Callable, Literal
+
+import numpy as np
+import soundfile as sf
+import soxr
+
+SourceId = Literal["A", "B"]
+ProgressCallback = Callable[[float], None]
+
+
+class AudioError(RuntimeError):
+    """Raised when an input cannot be used by the interleaver."""
+
+
+class RenderingCancelled(RuntimeError):
+    """Raised when an offline render is cancelled."""
+
+
+@dataclass(frozen=True, slots=True)
+class LoadedAudio:
+    """Decoded floating-point audio with frames on axis 0."""
+
+    samples: np.ndarray
+    sample_rate: int
+    path: Path | None = None
+
+    def __post_init__(self) -> None:
+        samples = np.asarray(self.samples, dtype=np.float32)
+        if samples.ndim == 1:
+            samples = samples[:, np.newaxis]
+        if samples.ndim != 2:
+            raise AudioError("Audio samples must have frames and channels.")
+        if len(samples) == 0:
+            raise AudioError("The WAV file contains no audio frames.")
+        if samples.shape[1] not in (1, 2):
+            raise AudioError("Only mono and stereo WAV files are supported.")
+        if self.sample_rate <= 0:
+            raise AudioError("The WAV file has an invalid sample rate.")
+        if not np.isfinite(samples).all():
+            raise AudioError("The WAV file contains invalid sample values.")
+        object.__setattr__(self, "samples", np.ascontiguousarray(samples))
+
+    @property
+    def channels(self) -> int:
+        return int(self.samples.shape[1])
+
+    @property
+    def frames(self) -> int:
+        return int(self.samples.shape[0])
+
+    @property
+    def duration(self) -> float:
+        return self.frames / self.sample_rate
+
+
+def load_wav(path: str | Path) -> LoadedAudio:
+    """Load a mono or stereo WAV as float32 samples."""
+
+    wav_path = Path(path)
+    try:
+        info = sf.info(wav_path)
+        if not info.format.upper().startswith("WAV"):
+            raise AudioError(f"{wav_path.name} is not a WAV file.")
+        samples, sample_rate = sf.read(wav_path, dtype="float32", always_2d=True)
+    except AudioError:
+        raise
+    except (OSError, RuntimeError, sf.SoundFileError) as exc:
+        raise AudioError(f"Could not read {wav_path.name}: {exc}") from exc
+    return LoadedAudio(samples=samples, sample_rate=int(sample_rate), path=wav_path)
+
+
+def write_wav(path: str | Path, samples: np.ndarray, sample_rate: int) -> None:
+    """Write a 16-bit PCM WAV, clipping only values outside the valid range."""
+
+    output_path = Path(path)
+    try:
+        safe_samples = np.clip(np.asarray(samples, dtype=np.float32), -1.0, 1.0)
+        sf.write(output_path, safe_samples, sample_rate, format="WAV", subtype="PCM_16")
+    except (OSError, RuntimeError, sf.SoundFileError) as exc:
+        raise AudioError(f"Could not write {output_path.name}: {exc}") from exc
+
+
+def select_source(slot_index: int, crossfader: float) -> SourceId:
+    """Select an evenly distributed source for a zero-based timeline slot."""
+
+    if slot_index < 0:
+        raise ValueError("slot_index must be non-negative")
+    position = float(np.clip(crossfader, 0.0, 1.0))
+    if position <= 0.0:
+        return "A"
+    if position >= 1.0:
+        return "B"
+
+    # This error-distribution sequence starts on A and accumulates the requested
+    # B share. At 0.5 it is exactly A, B, A, B; other positions remain even.
+    previous_total = math.floor(slot_index * position + 1e-12)
+    next_total = math.floor((slot_index + 1) * position + 1e-12)
+    return "B" if next_total > previous_total else "A"
+
+
+def _match_channels(samples: np.ndarray, channels: int) -> np.ndarray:
+    if samples.shape[1] == channels:
+        return samples
+    if samples.shape[1] == 1 and channels == 2:
+        return np.repeat(samples, 2, axis=1)
+    raise AudioError("The channel layouts cannot be normalized.")
+
+
+def _resample(samples: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
+    if source_rate == target_rate:
+        return samples
+    converted = soxr.resample(samples, source_rate, target_rate, quality="HQ")
+    return np.ascontiguousarray(converted, dtype=np.float32)
+
+
+@dataclass(slots=True)
+class AudioEngine:
+    """Normalized pair of sources and their shared interleave timeline."""
+
+    source_a: LoadedAudio
+    source_b: LoadedAudio
+    slot_ms: float = 360.0
+    smoothing_ms: float = 5.0
+
+    def __post_init__(self) -> None:
+        if self.slot_ms <= 0:
+            raise ValueError("slot_ms must be positive")
+        if self.smoothing_ms < 0 or self.smoothing_ms >= self.slot_ms:
+            raise ValueError("smoothing_ms must be non-negative and shorter than a slot")
+
+        target_rate = max(self.source_a.sample_rate, self.source_b.sample_rate)
+        target_channels = max(self.source_a.channels, self.source_b.channels)
+        self.source_a = self._normalize(self.source_a, target_rate, target_channels)
+        self.source_b = self._normalize(self.source_b, target_rate, target_channels)
+
+    @staticmethod
+    def _normalize(audio: LoadedAudio, sample_rate: int, channels: int) -> LoadedAudio:
+        samples = _match_channels(audio.samples, channels)
+        samples = _resample(samples, audio.sample_rate, sample_rate)
+        return LoadedAudio(samples=samples, sample_rate=sample_rate, path=audio.path)
+
+    @property
+    def sample_rate(self) -> int:
+        return self.source_a.sample_rate
+
+    @property
+    def channels(self) -> int:
+        return self.source_a.channels
+
+    @property
+    def total_frames(self) -> int:
+        return max(self.source_a.frames, self.source_b.frames)
+
+    @property
+    def duration(self) -> float:
+        return self.total_frames / self.sample_rate
+
+    @property
+    def slot_frames(self) -> int:
+        return max(1, round(self.sample_rate * self.slot_ms / 1000.0))
+
+    @property
+    def smoothing_frames(self) -> int:
+        return max(0, round(self.sample_rate * self.smoothing_ms / 1000.0))
+
+    @property
+    def slot_count(self) -> int:
+        return math.ceil(self.total_frames / self.slot_frames)
+
+    def source_for_slot(self, slot_index: int, crossfader: float) -> SourceId:
+        return select_source(slot_index, crossfader)
+
+    def _source(self, source_id: SourceId) -> LoadedAudio:
+        return self.source_a if source_id == "A" else self.source_b
+
+    def _timeline_segment(self, source_id: SourceId, start: int, length: int) -> np.ndarray:
+        source = self._source(source_id).samples
+        result = np.empty((length, self.channels), dtype=np.float32)
+        written = 0
+        position = start % len(source)
+        while written < length:
+            available = min(length - written, len(source) - position)
+            result[written : written + available] = source[position : position + available]
+            written += available
+            position = 0
+        return result
+
+    def render_slot(
+        self,
+        slot_index: int,
+        crossfader: float,
+        previous_source: SourceId | None = None,
+    ) -> tuple[np.ndarray, SourceId]:
+        """Render one slot, smoothing a source change at its leading edge."""
+
+        if slot_index < 0 or slot_index >= self.slot_count:
+            raise IndexError("slot_index is outside the output timeline")
+        start = slot_index * self.slot_frames
+        length = min(self.slot_frames, self.total_frames - start)
+        source_id = self.source_for_slot(slot_index, crossfader)
+        result = self._timeline_segment(source_id, start, length)
+
+        fade_length = min(self.smoothing_frames, length)
+        if previous_source is not None and previous_source != source_id and fade_length >= 2:
+            outgoing = self._timeline_segment(previous_source, start, fade_length)
+            angles = np.linspace(0.0, math.pi / 2.0, fade_length, dtype=np.float32)
+            outgoing_gain = np.cos(angles)[:, np.newaxis]
+            incoming_gain = np.sin(angles)[:, np.newaxis]
+            result[:fade_length] = outgoing * outgoing_gain + result[:fade_length] * incoming_gain
+            np.clip(result[:fade_length], -1.0, 1.0, out=result[:fade_length])
+        return result, source_id
+
+    def render(
+        self,
+        crossfader: float,
+        progress: ProgressCallback | None = None,
+        cancel_event: Event | None = None,
+    ) -> np.ndarray:
+        """Render the complete output using a fixed crossfader snapshot."""
+
+        output = np.empty((self.total_frames, self.channels), dtype=np.float32)
+        previous_source: SourceId | None = None
+        for slot_index in range(self.slot_count):
+            if cancel_event is not None and cancel_event.is_set():
+                raise RenderingCancelled("Rendering was cancelled.")
+            slot, previous_source = self.render_slot(
+                slot_index, crossfader, previous_source
+            )
+            start = slot_index * self.slot_frames
+            output[start : start + len(slot)] = slot
+            if progress is not None:
+                progress((start + len(slot)) / self.total_frames)
+        return output
