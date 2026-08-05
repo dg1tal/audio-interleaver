@@ -24,13 +24,16 @@ def test_window_starts_waiting_for_two_sources(qtbot):
     assert window.crossfader.value() == 0
     assert not window.crossfader.isEnabled()
     assert window.revision_label.text().startswith("Commit ")
-    assert not window.start_with_b_checkbox.isChecked()
+    assert window.start_with_a_radio.isChecked()
+    assert not window.start_with_b_radio.isChecked()
     assert window.first_alternate_slider.value() == 2
     assert window.burst_size_slider.value() == 1
     assert window.chunk_duration_slider.value() == 360
     assert window.chunk_duration_input.value() == 360
     assert window.crossfade_duration_slider.value() == 0
     assert window.crossfade_duration_input.value() == 0
+    assert window.raw_stage_radio.isChecked()
+    assert not window.acelp_stage_radio.isChecked()
     assert not window.loop_checkbox.isChecked()
     assert window.source_a_card.preview_button.text() == "Play preview"
     assert window.source_b_card.preview_button.text() == "Play preview"
@@ -120,7 +123,7 @@ def test_pattern_controls_update_preview(qtbot):
     window.burst_size_slider.setValue(2)
     assert window.interleave_timeline.slot_sources == tuple("ABBABBABB")
 
-    window.start_with_b_checkbox.setChecked(True)
+    window.start_with_b_radio.setChecked(True)
     assert window.first_alternate_title.text() == "FIRST A CHUNK POSITION"
     assert window.interleave_timeline.slot_sources == tuple("BABBABBAB")
 
@@ -240,10 +243,11 @@ def test_acelp_stage_uses_legal_frame_duration_positions(qtbot):
     window._rebuild_engine()
     window.chunk_duration_input.setValue(250)
 
-    window.stage_toggle.setChecked(True)
+    window.acelp_stage_radio.setChecked(True)
 
     assert isinstance(window._engine, AcelpEngine)
-    assert window.stage_value_label.text() == "ACELP"
+    assert window.acelp_stage_radio.isChecked()
+    assert not window.raw_stage_radio.isChecked()
     assert window.chunk_duration_slider.minimum() == 1
     assert window.chunk_duration_slider.maximum() == 66
     assert window.chunk_duration_slider.value() == 12
@@ -251,18 +255,28 @@ def test_acelp_stage_uses_legal_frame_duration_positions(qtbot):
     assert window.chunk_duration_input.singleStep() == 30
     assert not window.crossfade_duration_group.isEnabled()
     assert not window.b_encoder_controls.isHidden()
+    assert window.one_stream_radio.isChecked()
+    assert not window.restart_chunk_radio.isChecked()
     assert not window.acelp_banner.isHidden()
     assert not window.symbol_export_button.isHidden()
+
+    window.restart_chunk_radio.setChecked(True)
+    assert window._b_encoder_mode == "restart_each_chunk"
+    assert not window.one_stream_radio.isChecked()
+
+    window.one_stream_radio.setChecked(True)
+    assert window._b_encoder_mode == "one_stream"
+    assert not window.restart_chunk_radio.isChecked()
 
     window.chunk_duration_input.setValue(45)
     assert window.chunk_duration_input.value() == 60
     assert window.chunk_duration_slider.value() == 2
 
-    window.stage_toggle.setChecked(False)
+    window.raw_stage_radio.setChecked(True)
     assert window.chunk_duration_input.value() == 250
     assert window.chunk_duration_slider.value() == 250
 
-    window.stage_toggle.setChecked(True)
+    window.acelp_stage_radio.setChecked(True)
     assert window.chunk_duration_input.value() == 60
 
 
@@ -273,7 +287,7 @@ def test_acelp_configuration_locks_during_preparation(qtbot):
     window._source_a = source
     window._source_b = source
     window._rebuild_engine()
-    window.stage_toggle.setChecked(True)
+    window.acelp_stage_radio.setChecked(True)
 
     window._acelp_prepare_cancel.clear()
     window._acelp_preparing = True

@@ -15,6 +15,7 @@ from PySide6.QtCore import QObject, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QCloseEvent, QFont, QPaintEvent, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QSlider,
     QSpinBox,
     QVBoxLayout,
@@ -548,17 +550,21 @@ class MainWindow(QMainWindow):
         stage_header = QHBoxLayout()
         stage_title = QLabel("PROCESSING STAGE")
         stage_title.setObjectName("sectionTitle")
-        self.stage_value_label = QLabel("Raw wave")
-        self.stage_value_label.setObjectName("settingValue")
-        self.stage_toggle = QCheckBox("ACELP symbols")
-        self.stage_toggle.setToolTip(
+        self.raw_stage_radio = QRadioButton("Raw wave")
+        self.acelp_stage_radio = QRadioButton("ACELP symbols")
+        self.acelp_stage_radio.setToolTip(
             "Encode and replace complete ETSI TETRA ACELP speech frames"
         )
-        self.stage_toggle.toggled.connect(self._on_stage_changed)
+        self.stage_button_group = QButtonGroup(self)
+        self.stage_button_group.setExclusive(True)
+        self.stage_button_group.addButton(self.raw_stage_radio)
+        self.stage_button_group.addButton(self.acelp_stage_radio)
+        self.raw_stage_radio.setChecked(True)
+        self.acelp_stage_radio.toggled.connect(self._on_stage_changed)
         stage_header.addWidget(stage_title)
         stage_header.addStretch()
-        stage_header.addWidget(self.stage_value_label)
-        stage_header.addWidget(self.stage_toggle)
+        stage_header.addWidget(self.raw_stage_radio)
+        stage_header.addWidget(self.acelp_stage_radio)
         fader_layout.addLayout(stage_header)
 
         self.b_encoder_controls = QWidget()
@@ -566,17 +572,21 @@ class MainWindow(QMainWindow):
         b_encoder_layout.setContentsMargins(0, 0, 0, 0)
         b_encoder_title = QLabel("B ENCODER STATE")
         b_encoder_title.setObjectName("sectionTitle")
-        self.b_encoder_value_label = QLabel("One stream")
-        self.b_encoder_value_label.setObjectName("settingValue")
-        self.b_encoder_toggle = QCheckBox("Restart every chunk")
-        self.b_encoder_toggle.setToolTip(
-            "Unchecked: encode all active B chunks as one continuous stream"
+        self.one_stream_radio = QRadioButton("One stream")
+        self.restart_chunk_radio = QRadioButton("Restart every chunk")
+        self.restart_chunk_radio.setToolTip(
+            "Restart ACELP encoder state before every active B chunk"
         )
-        self.b_encoder_toggle.toggled.connect(self._on_b_encoder_mode_changed)
+        self.b_encoder_button_group = QButtonGroup(self)
+        self.b_encoder_button_group.setExclusive(True)
+        self.b_encoder_button_group.addButton(self.one_stream_radio)
+        self.b_encoder_button_group.addButton(self.restart_chunk_radio)
+        self.one_stream_radio.setChecked(True)
+        self.restart_chunk_radio.toggled.connect(self._on_b_encoder_mode_changed)
         b_encoder_layout.addWidget(b_encoder_title)
         b_encoder_layout.addStretch()
-        b_encoder_layout.addWidget(self.b_encoder_value_label)
-        b_encoder_layout.addWidget(self.b_encoder_toggle)
+        b_encoder_layout.addWidget(self.one_stream_radio)
+        b_encoder_layout.addWidget(self.restart_chunk_radio)
         self.b_encoder_controls.setVisible(False)
         fader_layout.addWidget(self.b_encoder_controls)
 
@@ -636,13 +646,23 @@ class MainWindow(QMainWindow):
         pattern_layout.addLayout(fader_labels)
 
         pattern_options = QHBoxLayout()
-        self.start_with_b_checkbox = QCheckBox("Start with B")
-        self.start_with_b_checkbox.setToolTip(
-            "Make output chunk 1 use source B instead of source A"
+        start_source_title = QLabel("STARTING SOURCE")
+        start_source_title.setObjectName("sectionTitle")
+        self.start_with_a_radio = QRadioButton("Start with A")
+        self.start_with_b_radio = QRadioButton("Start with B")
+        self.start_with_b_radio.setToolTip(
+            "Make output chunk 1 use source B"
         )
-        self.start_with_b_checkbox.toggled.connect(self._on_start_source_changed)
-        pattern_options.addWidget(self.start_with_b_checkbox)
+        self.start_source_button_group = QButtonGroup(self)
+        self.start_source_button_group.setExclusive(True)
+        self.start_source_button_group.addButton(self.start_with_a_radio)
+        self.start_source_button_group.addButton(self.start_with_b_radio)
+        self.start_with_a_radio.setChecked(True)
+        self.start_with_b_radio.toggled.connect(self._on_start_source_changed)
+        pattern_options.addWidget(start_source_title)
         pattern_options.addStretch()
+        pattern_options.addWidget(self.start_with_a_radio)
+        pattern_options.addWidget(self.start_with_b_radio)
         pattern_layout.addSpacing(6)
         pattern_layout.addLayout(pattern_options)
 
@@ -940,8 +960,9 @@ class MainWindow(QMainWindow):
             QPushButton:disabled { color: #686d78; background: #252831; border-color: #30343c; }
             QPushButton#primaryButton { background: #4778d0; border-color: #5789e2; }
             QPushButton#primaryButton:hover { background: #5486df; }
-            QCheckBox { spacing: 7px; color: #c4c8d2; font-weight: 600; }
+            QCheckBox, QRadioButton { spacing: 7px; color: #c4c8d2; font-weight: 600; }
             QCheckBox::indicator { width: 16px; height: 16px; }
+            QRadioButton::indicator { width: 16px; height: 16px; }
             QSlider::groove:horizontal { height: 6px; background: #3b404b; border-radius: 3px; }
             QSlider::sub-page:horizontal { background: #6ea8fe; border-radius: 3px; }
             QSlider::handle:horizontal {
@@ -1057,7 +1078,6 @@ class MainWindow(QMainWindow):
     def _on_stage_changed(self, acelp_enabled: bool) -> None:
         self._stop_all_playback(wait=True, reset=True)
         self._stage = "acelp" if acelp_enabled else "raw"
-        self.stage_value_label.setText("ACELP" if acelp_enabled else "Raw wave")
         self.b_encoder_controls.setVisible(acelp_enabled)
         self.acelp_banner.setVisible(acelp_enabled)
         self.symbol_export_button.setVisible(acelp_enabled)
@@ -1071,9 +1091,6 @@ class MainWindow(QMainWindow):
     def _on_b_encoder_mode_changed(self, restart_each_chunk: bool) -> None:
         self._b_encoder_mode = (
             "restart_each_chunk" if restart_each_chunk else "one_stream"
-        )
-        self.b_encoder_value_label.setText(
-            "Restart per chunk" if restart_each_chunk else "One stream"
         )
 
     def _pattern_changed(self) -> None:
