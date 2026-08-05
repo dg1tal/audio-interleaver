@@ -33,4 +33,4 @@ __all__ = [
     "snap_acelp_chunk_ms",
     "write_wav",
 ]
-__version__ = "0.1.0"
+__version__ = "0.2.0"
