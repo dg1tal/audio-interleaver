@@ -27,8 +27,10 @@ from PySide6.QtWidgets import (
 from .audio import (
     AudioEngine,
     AudioError,
+    InterleavePattern,
     LoadedAudio,
     RenderingCancelled,
+    SourceId,
     load_wav,
     write_wav,
 )
@@ -104,7 +106,7 @@ class InterleaveTimeline(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._engine: AudioEngine | None = None
-        self._crossfader = 0.5
+        self._pattern = InterleavePattern()
         self._position = 0.0
         self._slot_sources: tuple[str, ...] = ()
         self.setMinimumHeight(58)
@@ -133,8 +135,8 @@ class InterleaveTimeline(QWidget):
         self._position = 0.0
         self._rebuild_slots()
 
-    def set_crossfader(self, crossfader: float) -> None:
-        self._crossfader = max(0.0, min(1.0, crossfader))
+    def set_pattern(self, pattern: InterleavePattern) -> None:
+        self._pattern = pattern
         self._rebuild_slots()
 
     def set_position(self, seconds: float) -> None:
@@ -146,7 +148,7 @@ class InterleaveTimeline(QWidget):
             self._slot_sources = ()
         else:
             self._slot_sources = tuple(
-                self._engine.source_for_slot(index, self._crossfader)
+                self._engine.source_for_slot(index, self._pattern)
                 for index in range(self._engine.slot_count)
             )
         self.update()
@@ -235,13 +237,16 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Audio Interleaver")
-        self.setMinimumSize(760, 800)
-        self.resize(860, 820)
+        self.setMinimumSize(760, 900)
+        self.resize(860, 940)
 
         self._source_a: LoadedAudio | None = None
         self._source_b: LoadedAudio | None = None
         self._engine: AudioEngine | None = None
-        self._crossfader = 0.5
+        self._fill = 0.5
+        self._starts_with: SourceId = "A"
+        self._first_alternate_slot = 1
+        self._b_chunks_per_occurrence = 1
         self._chunk_ms = DEFAULT_CHUNK_MS
         self._crossfade_ms = DEFAULT_CROSSFADE_MS
         self._loop = False
@@ -280,7 +285,7 @@ class MainWindow(QMainWindow):
         product_subheading = QLabel("A product of DG1TAL Compute Sweatshop")
         product_subheading.setObjectName("productSubheading")
         subtitle = QLabel(
-            "Blend by selection: choose alternating chunks from source A or B."
+            "Build repeating chunk patterns from two independent audio sources."
         )
         subtitle.setObjectName("subtitle")
         title_block = QVBoxLayout()
@@ -308,9 +313,9 @@ class MainWindow(QMainWindow):
         fader_layout.setSpacing(8)
 
         fader_header = QHBoxLayout()
-        fader_title = QLabel("CROSSFADER")
+        fader_title = QLabel("B OCCURRENCE FILL")
         fader_title.setObjectName("sectionTitle")
-        self.mix_label = QLabel("A 50%  •  B 50%")
+        self.mix_label = QLabel("50%")
         self.mix_label.setObjectName("mixLabel")
         fader_header.addWidget(fader_title)
         fader_header.addStretch()
@@ -326,14 +331,69 @@ class MainWindow(QMainWindow):
         fader_layout.addWidget(self.crossfader)
 
         fader_labels = QHBoxLayout()
-        fader_labels.addWidget(QLabel("A only"))
-        center_label = QLabel("Alternating")
+        fader_labels.addWidget(QLabel("Minimum pattern"))
+        center_label = QLabel("Reveal left to right")
         center_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         fader_labels.addWidget(center_label, 1)
-        right_label = QLabel("B only")
+        right_label = QLabel("All occurrences")
         right_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         fader_labels.addWidget(right_label)
         fader_layout.addLayout(fader_labels)
+
+        pattern_options = QHBoxLayout()
+        self.start_with_b_checkbox = QCheckBox("Start with B")
+        self.start_with_b_checkbox.setToolTip(
+            "Make output chunk 1 use source B instead of source A"
+        )
+        self.start_with_b_checkbox.toggled.connect(self._on_start_source_changed)
+        pattern_options.addWidget(self.start_with_b_checkbox)
+        pattern_options.addStretch()
+        fader_layout.addSpacing(6)
+        fader_layout.addLayout(pattern_options)
+
+        alternate_header = QHBoxLayout()
+        self.first_alternate_title = QLabel("FIRST B CHUNK")
+        self.first_alternate_title.setObjectName("sectionTitle")
+        self.first_alternate_label = QLabel("Chunk 2")
+        self.first_alternate_label.setObjectName("settingValue")
+        alternate_header.addWidget(self.first_alternate_title)
+        alternate_header.addStretch()
+        alternate_header.addWidget(self.first_alternate_label)
+        fader_layout.addLayout(alternate_header)
+
+        self.first_alternate_slider = QSlider(Qt.Orientation.Horizontal)
+        self.first_alternate_slider.setRange(2, 2)
+        self.first_alternate_slider.setValue(2)
+        self.first_alternate_slider.setEnabled(False)
+        self.first_alternate_slider.setSingleStep(1)
+        self.first_alternate_slider.setTickPosition(
+            QSlider.TickPosition.TicksBelow
+        )
+        self.first_alternate_slider.setTickInterval(1)
+        self.first_alternate_slider.valueChanged.connect(
+            self._on_first_alternate_changed
+        )
+        fader_layout.addWidget(self.first_alternate_slider)
+
+        burst_header = QHBoxLayout()
+        burst_title = QLabel("B CHUNKS PER OCCURRENCE")
+        burst_title.setObjectName("sectionTitle")
+        self.burst_size_label = QLabel("1")
+        self.burst_size_label.setObjectName("settingValue")
+        burst_header.addWidget(burst_title)
+        burst_header.addStretch()
+        burst_header.addWidget(self.burst_size_label)
+        fader_layout.addLayout(burst_header)
+
+        self.burst_size_slider = QSlider(Qt.Orientation.Horizontal)
+        self.burst_size_slider.setRange(1, 1)
+        self.burst_size_slider.setValue(1)
+        self.burst_size_slider.setEnabled(False)
+        self.burst_size_slider.setSingleStep(1)
+        self.burst_size_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.burst_size_slider.setTickInterval(1)
+        self.burst_size_slider.valueChanged.connect(self._on_burst_size_changed)
+        fader_layout.addWidget(self.burst_size_slider)
 
         chunk_header = QHBoxLayout()
         chunk_title = QLabel("CHUNK DURATION")
@@ -502,9 +562,36 @@ class MainWindow(QMainWindow):
         self._rebuild_engine()
 
     def _on_crossfader_changed(self, value: int) -> None:
-        self._crossfader = value / 100.0
-        self.mix_label.setText(f"A {100 - value}%  •  B {value}%")
-        self.interleave_timeline.set_crossfader(self._crossfader)
+        self._fill = value / 100.0
+        self.mix_label.setText(f"{value}%")
+        self._pattern_changed()
+
+    def _on_start_source_changed(self, starts_with_b: bool) -> None:
+        self._starts_with = "B" if starts_with_b else "A"
+        alternate = "A" if starts_with_b else "B"
+        self.first_alternate_title.setText(f"FIRST {alternate} CHUNK")
+        self._pattern_changed()
+
+    def _on_first_alternate_changed(self, chunk_number: int) -> None:
+        self._first_alternate_slot = chunk_number - 1
+        self.first_alternate_label.setText(f"Chunk {chunk_number}")
+        self._pattern_changed()
+
+    def _on_burst_size_changed(self, chunks: int) -> None:
+        self._b_chunks_per_occurrence = chunks
+        self.burst_size_label.setText(str(chunks))
+        self._pattern_changed()
+
+    def _pattern(self) -> InterleavePattern:
+        return InterleavePattern(
+            fill=self._fill,
+            starts_with=self._starts_with,
+            first_alternate_slot=self._first_alternate_slot,
+            b_chunks_per_occurrence=self._b_chunks_per_occurrence,
+        )
+
+    def _pattern_changed(self) -> None:
+        self.interleave_timeline.set_pattern(self._pattern())
 
     def _on_chunk_duration_changed(self, value: int) -> None:
         self._chunk_ms = value
@@ -545,9 +632,46 @@ class MainWindow(QMainWindow):
             )
         else:
             self.status_label.setText("Load the other WAV file to begin.")
+        self._sync_pattern_controls()
         self.interleave_timeline.set_engine(self._engine)
+        self.interleave_timeline.set_pattern(self._pattern())
         self._update_time(0.0)
         self._refresh_actions()
+
+    def _sync_pattern_controls(self) -> None:
+        slot_count = self._engine.slot_count if self._engine is not None else 1
+        has_alternate_slot = slot_count >= 2
+
+        self.first_alternate_slider.blockSignals(True)
+        self.burst_size_slider.blockSignals(True)
+        if has_alternate_slot:
+            self._first_alternate_slot = min(
+                max(1, self._first_alternate_slot), slot_count - 1
+            )
+            self._b_chunks_per_occurrence = min(
+                max(1, self._b_chunks_per_occurrence), slot_count
+            )
+            self.first_alternate_slider.setRange(2, slot_count)
+            self.first_alternate_slider.setValue(self._first_alternate_slot + 1)
+            self.burst_size_slider.setRange(1, slot_count)
+            self.burst_size_slider.setValue(self._b_chunks_per_occurrence)
+        else:
+            self._first_alternate_slot = 1
+            self._b_chunks_per_occurrence = 1
+            self.first_alternate_slider.setRange(2, 2)
+            self.first_alternate_slider.setValue(2)
+            self.burst_size_slider.setRange(1, 1)
+            self.burst_size_slider.setValue(1)
+        self.first_alternate_slider.setEnabled(has_alternate_slot)
+        self.burst_size_slider.setEnabled(has_alternate_slot)
+        self.first_alternate_label.setText(
+            f"Chunk {self._first_alternate_slot + 1}"
+            if has_alternate_slot
+            else "Unavailable"
+        )
+        self.burst_size_label.setText(str(self._b_chunks_per_occurrence))
+        self.first_alternate_slider.blockSignals(False)
+        self.burst_size_slider.blockSignals(False)
 
     def _on_loop_changed(self, checked: bool) -> None:
         self._loop = checked
@@ -560,12 +684,10 @@ class MainWindow(QMainWindow):
             return
         self.progress.setValue(0)
         self._update_time(0.0)
-        if self._playback.start(
-            self._engine, lambda: self._crossfader, lambda: self._loop
-        ):
+        if self._playback.start(self._engine, self._pattern, lambda: self._loop):
             self.play_button.setText("Stop")
             self.status_label.setText(
-                f"Playing • crossfader changes apply at the next "
+                f"Playing • pattern changes apply at the next "
                 f"{self._chunk_ms} ms boundary"
             )
 
@@ -620,12 +742,12 @@ class MainWindow(QMainWindow):
 
         self._stop_playback(wait=True, reset=True)
         engine = self._engine
-        snapshot = self._crossfader
+        snapshot = self._pattern()
         self._export_cancel.clear()
         self._exporting = True
         self.progress.setValue(0)
         self.status_label.setText(
-            f"Exporting snapshot at A {round((1 - snapshot) * 100)}% / B {round(snapshot * 100)}%…"
+            f"Exporting pattern at {round(snapshot.fill * 100)}% occurrence fill…"
         )
         self._refresh_actions()
 
@@ -638,11 +760,11 @@ class MainWindow(QMainWindow):
         self._export_thread.start()
 
     def _render_export(
-        self, engine: AudioEngine, crossfader: float, output_path: Path
+        self, engine: AudioEngine, pattern: InterleavePattern, output_path: Path
     ) -> None:
         try:
             rendered = engine.render(
-                crossfader,
+                pattern,
                 progress=lambda value: self._signals.export_progress.emit(round(value * 1000)),
                 cancel_event=self._export_cancel,
             )

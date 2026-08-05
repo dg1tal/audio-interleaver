@@ -1,18 +1,18 @@
 # Audio Interleaver
 
 Audio Interleaver is a desktop application that divides two WAV files into
-independent, configurable chunks and places those chunks into output slots. The
-selection crossfader controls how many chunks come from each source:
+independent, configurable chunks and places those chunks into a repeating
+output pattern. B occurrences are revealed from left to right, so adding more
+never moves an existing B chunk toward the beginning of the timeline.
 
-- **A only:** every slot uses source A.
-- **Center:** slots alternate B, A, B, A, inserting source B from the start.
-- **B only:** every slot uses source B.
-- **Between those points:** A and B slots are distributed evenly in the chosen
-  proportion.
+The pattern controls choose whether the output starts with A or B, where the
+first alternate-source chunk occurs, and how many consecutive B chunks each
+occurrence contains. One B chunk per occurrence produces `A B A B A B`; two
+produce `A B B A B B`; three produce `A B B B A B B B`. The occurrence-fill
+slider progressively enables those complete B groups from left to right.
 
-This is a chunk-selection crossfader, not a conventional volume mixer. Each
-source advances to its own next chunk whenever it is selected; the files are
-not aligned on a shared timeline. When a boundary switches sources, an
+Each source advances to its own next chunk whenever it is selected; the files
+are not aligned on a shared timeline. When a boundary switches sources, an
 equal-power transition crossfades the previous chunk's tail into the next
 chunk's beginning without changing chunk order or output duration. The
 crossfade is adjustable from 0 to 50 ms (5 ms by default). When the sources
@@ -80,13 +80,13 @@ python -m pip install -e .
 audio-interleaver
 ```
 
-Load source A and source B, choose the chunk and crossfade durations,
-move the selection crossfader, and press **Play**. Selection changes made during
-playback take effect when the next chunk starts. Changing either duration stops
-playback and rebuilds the timeline. Use the **Loop** checkbox to restart the
-complete result whenever playback reaches the end. Turn it off during playback
-to stop looping after the current pass. Use **Export WAV…** to render a complete
-file using a snapshot of the current settings.
+Load source A and source B, configure the occurrence fill, starting source,
+first alternate chunk, B burst size, and chunk/crossfade durations, then press
+**Play**. Pattern changes made during playback take effect when the next chunk
+starts. Changing either duration stops playback and rebuilds the timeline. Use
+the **Loop** checkbox to restart the complete result whenever playback reaches
+the end. Turn it off during playback to stop looping after the current pass.
+Use **Export WAV…** to render a complete file using a snapshot of the settings.
 
 ## Test
 
@@ -94,9 +94,10 @@ file using a snapshot of the current settings.
 python -m pytest
 ```
 
-The test suite covers deterministic selection, sequential source chunks,
-looping, partial final slots, format normalization, transition smoothing, live slot
-updates, WAV I/O, and a headless UI smoke test.
+The test suite covers deterministic occurrence patterns, B burst sizes, start
+and insertion controls, sequential source chunks, looping, partial final slots,
+format normalization, transition smoothing, live updates, WAV I/O, and a
+headless UI smoke test.
 
 The included GitHub Actions workflow runs this suite on macOS, Windows, and
 Linux with the oldest and newest supported Python versions.

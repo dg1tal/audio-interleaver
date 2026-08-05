@@ -4,7 +4,7 @@ import threading
 
 import numpy as np
 
-from audio_interleaver.audio import AudioEngine, LoadedAudio
+from audio_interleaver.audio import AudioEngine, InterleavePattern, LoadedAudio
 from audio_interleaver.playback import PlaybackController
 
 
@@ -30,12 +30,18 @@ class FakeOutputStream:
         pass
 
 
-def test_crossfader_is_sampled_before_each_playback_slot(monkeypatch):
+def test_pattern_is_sampled_before_each_playback_slot(monkeypatch):
     monkeypatch.setattr("audio_interleaver.playback.sd.OutputStream", FakeOutputStream)
     source_a = LoadedAudio(np.full((1080, 1), 0.1, dtype=np.float32), 1000)
     source_b = LoadedAudio(np.full((1080, 1), 0.9, dtype=np.float32), 1000)
     engine = AudioEngine(source_a, source_b, smoothing_ms=0)
-    values = iter((0.0, 1.0, 0.0))
+    values = iter(
+        (
+            InterleavePattern(fill=0.0),
+            InterleavePattern(fill=1.0),
+            InterleavePattern(fill=0.0),
+        )
+    )
     finished = threading.Event()
     natural = []
     errors = []
@@ -73,7 +79,9 @@ def test_loop_replays_the_complete_result(monkeypatch):
         on_error=lambda _message: None,
     )
 
-    assert controller.start(engine, lambda: 0.5, lambda: next(loop_values))
+    assert controller.start(
+        engine, lambda: InterleavePattern(fill=1.0), lambda: next(loop_values)
+    )
     assert finished.wait(2)
 
     writes = FakeOutputStream.instances[-1].writes

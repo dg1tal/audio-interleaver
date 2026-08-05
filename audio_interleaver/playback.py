@@ -7,9 +7,9 @@ import threading
 
 import sounddevice as sd
 
-from .audio import AudioEngine, SourceId
+from .audio import AudioEngine, InterleavePattern, SourceId
 
-CrossfaderProvider = Callable[[], float]
+PatternProvider = Callable[[], InterleavePattern]
 LoopProvider = Callable[[], bool]
 PositionCallback = Callable[[float], None]
 FinishedCallback = Callable[[bool], None]
@@ -19,7 +19,7 @@ ErrorCallback = Callable[[str], None]
 class PlaybackController:
     """Stream rendered slots on a worker thread.
 
-    The crossfader provider is sampled immediately before each slot is rendered,
+    Pattern settings are sampled immediately before each slot is rendered,
     which makes UI changes take effect at the next chunk boundary.
     """
 
@@ -45,7 +45,7 @@ class PlaybackController:
     def start(
         self,
         engine: AudioEngine,
-        crossfader: CrossfaderProvider,
+        pattern: PatternProvider,
         loop: LoopProvider | None = None,
     ) -> bool:
         with self._lock:
@@ -54,7 +54,7 @@ class PlaybackController:
             self._stop_event.clear()
             self._thread = threading.Thread(
                 target=self._run,
-                args=(engine, crossfader, loop),
+                args=(engine, pattern, loop),
                 name="audio-playback",
                 daemon=True,
             )
@@ -77,7 +77,7 @@ class PlaybackController:
     def _run(
         self,
         engine: AudioEngine,
-        crossfader: CrossfaderProvider,
+        pattern: PatternProvider,
         loop: LoopProvider | None,
     ) -> None:
         natural_finish = False
@@ -97,11 +97,11 @@ class PlaybackController:
                 for slot_index in range(engine.slot_count):
                     if self._stop_event.is_set():
                         break
-                    position = crossfader()
-                    source_id = engine.source_for_slot(slot_index, position)
+                    settings = pattern()
+                    source_id = engine.source_for_slot(slot_index, settings)
                     slot, previous_source = engine.render_slot(
                         slot_index,
-                        position,
+                        settings,
                         source_chunk_indices[source_id],
                         previous_source,
                         previous_chunk,

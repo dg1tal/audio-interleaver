@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "audio-interleaver"
 version = "0.1.0"
-description = "A desktop WAV interleaver with a chunk-selection crossfader"
+description = "A desktop WAV interleaver with configurable repeating chunk patterns"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -31,4 +31,3 @@ include = ["audio_interleaver*"]
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]
-

@@ -88,23 +88,65 @@ def write_wav(path: str | Path, samples: np.ndarray, sample_rate: int) -> None:
         raise AudioError(f"Could not write {output_path.name}: {exc}") from exc
 
 
-def select_source(slot_index: int, crossfader: float) -> SourceId:
-    """Select an evenly distributed source for a zero-based timeline slot."""
+@dataclass(frozen=True, slots=True)
+class InterleavePattern:
+    """Settings for a repeating, left-to-right B-chunk insertion pattern."""
 
-    if slot_index < 0:
-        raise ValueError("slot_index must be non-negative")
-    position = float(np.clip(crossfader, 0.0, 1.0))
-    if position <= 0.0:
+    fill: float = 0.5
+    starts_with: SourceId = "A"
+    first_alternate_slot: int = 1
+    b_chunks_per_occurrence: int = 1
+
+    def __post_init__(self) -> None:
+        if self.starts_with not in ("A", "B"):
+            raise ValueError("starts_with must be A or B")
+        if self.first_alternate_slot < 1:
+            raise ValueError(
+                "first_alternate_slot must leave at least one leading slot"
+            )
+        if self.b_chunks_per_occurrence < 1:
+            raise ValueError("b_chunks_per_occurrence must be positive")
+
+
+def select_source(
+    slot_index: int,
+    slot_count: int,
+    pattern: InterleavePattern,
+) -> SourceId:
+    """Select a source from the active left-to-right occurrence pattern."""
+
+    if slot_count <= 0:
+        raise ValueError("slot_count must be positive")
+    if slot_index < 0 or slot_index >= slot_count:
+        raise IndexError("slot_index is outside the output timeline")
+
+    first_alternate = min(pattern.first_alternate_slot, slot_count)
+    if slot_index < first_alternate:
+        return pattern.starts_with
+
+    burst = pattern.b_chunks_per_occurrence
+    cycle_length = burst + 1
+    if pattern.starts_with == "A":
+        first_b = first_alternate
+    else:
+        if slot_index == first_alternate:
+            return "A"
+        first_b = first_alternate + 1
+
+    if first_b >= slot_count or slot_index < first_b:
         return "A"
-    if position >= 1.0:
-        return "B"
 
-    # Front-load B's share in each error-distribution cycle so chunks from the
-    # second source are inserted from the beginning. At 0.5 this is exactly
-    # B, A, B, A; other positions remain evenly distributed.
-    previous_total = math.ceil(slot_index * position - 1e-12)
-    next_total = math.ceil((slot_index + 1) * position - 1e-12)
-    return "B" if next_total > previous_total else "A"
+    occurrence_count = math.ceil((slot_count - first_b) / cycle_length)
+    fill = float(np.clip(pattern.fill, 0.0, 1.0))
+    active_occurrences = min(
+        occurrence_count,
+        math.floor(fill * occurrence_count + 0.5),
+    )
+    relative_slot = slot_index - first_b
+    occurrence_index, position_in_cycle = divmod(relative_slot, cycle_length)
+    if occurrence_index < active_occurrences and position_in_cycle < burst:
+        return "B"
+    return "A"
 
 
 def _match_channels(samples: np.ndarray, channels: int) -> np.ndarray:
@@ -176,8 +218,10 @@ class AudioEngine:
     def slot_count(self) -> int:
         return math.ceil(self.total_frames / self.slot_frames)
 
-    def source_for_slot(self, slot_index: int, crossfader: float) -> SourceId:
-        return select_source(slot_index, crossfader)
+    def source_for_slot(
+        self, slot_index: int, pattern: InterleavePattern
+    ) -> SourceId:
+        return select_source(slot_index, self.slot_count, pattern)
 
     def _source(self, source_id: SourceId) -> LoadedAudio:
         return self.source_a if source_id == "A" else self.source_b
@@ -199,7 +243,7 @@ class AudioEngine:
     def render_slot(
         self,
         slot_index: int,
-        crossfader: float,
+        pattern: InterleavePattern,
         source_chunk_index: int | None = None,
         previous_source: SourceId | None = None,
         previous_chunk: np.ndarray | None = None,
@@ -210,10 +254,10 @@ class AudioEngine:
             raise IndexError("slot_index is outside the output timeline")
         start = slot_index * self.slot_frames
         length = min(self.slot_frames, self.total_frames - start)
-        source_id = self.source_for_slot(slot_index, crossfader)
+        source_id = self.source_for_slot(slot_index, pattern)
         if source_chunk_index is None:
             source_chunk_index = sum(
-                self.source_for_slot(index, crossfader) == source_id
+                self.source_for_slot(index, pattern) == source_id
                 for index in range(slot_index)
             )
         if source_chunk_index < 0:
@@ -243,11 +287,11 @@ class AudioEngine:
 
     def render(
         self,
-        crossfader: float,
+        pattern: InterleavePattern,
         progress: ProgressCallback | None = None,
         cancel_event: Event | None = None,
     ) -> np.ndarray:
-        """Render the complete output using a fixed crossfader snapshot."""
+        """Render the complete output using a fixed pattern snapshot."""
 
         output = np.empty((self.total_frames, self.channels), dtype=np.float32)
         source_chunk_indices: dict[SourceId, int] = {"A": 0, "B": 0}
@@ -256,10 +300,10 @@ class AudioEngine:
         for slot_index in range(self.slot_count):
             if cancel_event is not None and cancel_event.is_set():
                 raise RenderingCancelled("Rendering was cancelled.")
-            source_id = self.source_for_slot(slot_index, crossfader)
+            source_id = self.source_for_slot(slot_index, pattern)
             slot, previous_source = self.render_slot(
                 slot_index,
-                crossfader,
+                pattern,
                 source_chunk_indices[source_id],
                 previous_source,
                 previous_chunk,
