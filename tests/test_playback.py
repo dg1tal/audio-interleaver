@@ -25,22 +25,26 @@ class FakeOutputStream:
         self.writes = []
         self.aborted = False
         self.stopped = False
+        self.call_threads = []
         self.instances.append(self)
 
     def start(self):
-        pass
+        self.call_threads.append(("start", threading.get_ident()))
 
     def write(self, samples):
+        self.call_threads.append(("write", threading.get_ident()))
         self.writes.append(samples.copy())
 
     def abort(self):
+        self.call_threads.append(("abort", threading.get_ident()))
         self.aborted = True
 
     def stop(self):
+        self.call_threads.append(("stop", threading.get_ident()))
         self.stopped = True
 
     def close(self):
-        pass
+        self.call_threads.append(("close", threading.get_ident()))
 
 
 def test_pattern_is_sampled_before_each_playback_slot(monkeypatch):
@@ -67,11 +71,12 @@ def test_pattern_is_sampled_before_each_playback_slot(monkeypatch):
     assert controller.start(engine, lambda: next(values))
     assert finished.wait(2)
 
-    writes = FakeOutputStream.instances[-1].writes
-    assert len(writes) == 3
-    np.testing.assert_allclose(writes[0], 0.1)
-    np.testing.assert_allclose(writes[1], 0.9)
-    np.testing.assert_allclose(writes[2], 0.1)
+    stream = FakeOutputStream.instances[-1]
+    rendered = np.concatenate(stream.writes)
+    np.testing.assert_allclose(rendered[:360], 0.1)
+    np.testing.assert_allclose(rendered[360:720], 0.9)
+    np.testing.assert_allclose(rendered[720:], 0.1)
+    assert max(map(len, stream.writes)) == 20
     assert natural == [True]
     assert errors == []
 
@@ -97,10 +102,10 @@ def test_loop_replays_the_complete_result(monkeypatch):
     )
     assert finished.wait(2)
 
-    writes = FakeOutputStream.instances[-1].writes
-    assert len(writes) == 4
-    np.testing.assert_allclose(writes[0], writes[2])
-    np.testing.assert_allclose(writes[1], writes[3])
+    stream = FakeOutputStream.instances[-1]
+    rendered = np.concatenate(stream.writes)
+    assert len(rendered) == 1440
+    np.testing.assert_allclose(rendered[:720], rendered[720:])
     assert positions == [0.36, 0.72, 0.0, 0.36, 0.72]
     assert natural == [True]
 
@@ -126,14 +131,15 @@ def test_region_insert_playback_uses_selected_b_source_window(monkeypatch):
 
     assert controller.start(
         engine,
-        lambda: RegionInsert(b_source_ms=100, output_slot=1, length_slots=1),
+        lambda: RegionInsert(b_source_ms=150, output_slot=1, length_slots=1),
     )
     assert finished.wait(2)
 
-    writes = FakeOutputStream.instances[-1].writes
-    np.testing.assert_allclose(writes[0], 0.1)
-    np.testing.assert_allclose(writes[1], 0.7)
-    np.testing.assert_allclose(writes[2], 0.3)
+    rendered = np.concatenate(FakeOutputStream.instances[-1].writes)
+    np.testing.assert_allclose(rendered[:100], 0.1)
+    np.testing.assert_allclose(rendered[100:150], 0.7)
+    np.testing.assert_allclose(rendered[150:200], 0.8)
+    np.testing.assert_allclose(rendered[200:], 0.3)
 
 
 def test_audio_preview_controller_plays_the_supplied_buffer(monkeypatch):
@@ -168,7 +174,7 @@ class BlockingPreviewStream(FakeOutputStream):
     def write(self, samples):
         super().write(samples)
         self.first_write.set()
-        self.release_write.wait(2)
+        self.release_write.wait(0.1)
 
     def abort(self):
         super().abort()
@@ -199,10 +205,56 @@ def test_audio_preview_stop_interrupts_playback_between_small_blocks(monkeypatch
     assert finished.wait(2)
 
     stream = BlockingPreviewStream.instances[-1]
-    assert stream.aborted
+    assert not stream.aborted
     assert not stream.stopped
     assert sum(len(block) for block in stream.writes) < source.frames
     assert results == [("source-A", False)]
+
+
+def test_stream_lifecycle_stays_on_playback_worker(monkeypatch):
+    FakeOutputStream.instances.clear()
+    monkeypatch.setattr("audio_interleaver.playback.sd.OutputStream", FakeOutputStream)
+    source = LoadedAudio(np.full((100, 1), 0.4, dtype=np.float32), 1000)
+    finished = threading.Event()
+    controller = AudioPreviewController(
+        on_finished=lambda _preview_id, _natural: finished.set(),
+        on_error=lambda _message: None,
+    )
+
+    assert controller.start(source, "source-A")
+    assert finished.wait(2)
+
+    stream = FakeOutputStream.instances[-1]
+    method_threads = {thread_id for _method, thread_id in stream.call_threads}
+    assert method_threads == {stream.call_threads[0][1]}
+    assert threading.get_ident() not in method_threads
+    assert [method for method, _thread in stream.call_threads][-2:] == [
+        "stop",
+        "close",
+    ]
+
+
+def test_preview_can_be_restarted_repeatedly_without_overlapping_streams(monkeypatch):
+    FakeOutputStream.instances.clear()
+    monkeypatch.setattr("audio_interleaver.playback.sd.OutputStream", FakeOutputStream)
+    source = LoadedAudio(np.full((100, 1), 0.4, dtype=np.float32), 1000)
+    finished_count = 0
+    finished = threading.Event()
+
+    def on_finished(_preview_id, _natural):
+        nonlocal finished_count
+        finished_count += 1
+        finished.set()
+
+    controller = AudioPreviewController(on_finished, lambda _message: None)
+    for index in range(50):
+        finished.clear()
+        assert controller.start(source, f"region-B-{index}")
+        assert finished.wait(2)
+        assert not controller.is_playing
+
+    assert finished_count == 50
+    assert len(FakeOutputStream.instances) == 50
 
 
 def test_rendered_playback_reports_position_for_fixed_acelp_result(monkeypatch):

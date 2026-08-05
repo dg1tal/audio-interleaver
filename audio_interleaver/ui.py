@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import logging
 import math
 import os
 import subprocess
@@ -59,6 +60,7 @@ from .playback import (
     PlaybackController,
     RenderedPlaybackController,
 )
+from .diagnostics import configure_diagnostics
 
 
 SOURCE_A_COLOR = "#6ea8fe"
@@ -68,6 +70,7 @@ DEFAULT_CROSSFADE_MS = 0
 MIN_CHUNK_MS = 50
 MAX_CHUNK_MS = 2000
 MAX_CROSSFADE_MS = 50
+_LOG = logging.getLogger(__name__)
 
 
 def _format_time(seconds: float) -> str:
@@ -1082,6 +1085,12 @@ class MainWindow(QMainWindow):
             self._stop_preview(wait=True)
         step_ms = ACELP_FRAME_MS if self._stage == "acelp" else 1
         self._region_b_source_ms = position_step * step_ms
+        _LOG.info(
+            "region B source changed position_ms=%s length_slots=%s output_slot=%s",
+            self._region_b_source_ms,
+            self._region_length_slots,
+            self._region_output_slot,
+        )
         self.region_source_label.setText(
             _format_position_ms(self._region_b_source_ms)
         )
@@ -1458,6 +1467,12 @@ class MainWindow(QMainWindow):
         if self._engine is None:
             return
         self._stop_preview(wait=True)
+        _LOG.info(
+            "play requested stage=%s loop=%s settings=%r",
+            self._stage,
+            self._loop,
+            self._settings(),
+        )
         self.progress.setValue(0)
         self._update_time(0.0)
         if self._stage == "acelp":
@@ -1865,6 +1880,8 @@ class MainWindow(QMainWindow):
 
 
 def main() -> int:
+    log_path = configure_diagnostics()
+    _LOG.info("creating Qt application commit=%s", _commit_hash())
     app = QApplication(sys.argv)
     app.setApplicationName("Audio Interleaver")
     app.setOrganizationName("Audio Interleaver")
@@ -1874,7 +1891,9 @@ def main() -> int:
     app.setFont(font)
     window = MainWindow()
     window.show()
-    return app.exec()
+    exit_code = app.exec()
+    _LOG.info("application exiting code=%s log=%s", exit_code, log_path)
+    return exit_code
 
 
 if __name__ == "__main__":

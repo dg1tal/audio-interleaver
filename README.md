@@ -126,6 +126,22 @@ prepared or played.
 The window displays the current Git commit. Packaged builds can set it with the
 `AUDIO_INTERLEAVER_COMMIT` environment variable.
 
+## Diagnostics
+
+The application keeps rotating playback and crash diagnostics so failures in
+PortAudio, CoreAudio, Qt, or a native extension can be investigated even when
+no error dialog appears. On macOS, the files are stored in
+`~/Library/Logs/Audio Interleaver/`; on Linux, they default to
+`~/.local/state/audio-interleaver/`; and on Windows they are stored below
+`%LOCALAPPDATA%\Audio Interleaver\Logs`. Set `AUDIO_INTERLEAVER_LOG_DIR` to use
+a different directory.
+
+`audio-interleaver.log` records playback sessions, loop transitions, stream
+lifecycle events, device information, and Python exceptions.
+`native-crash.log` receives Python fault-handler output for fatal native
+signals. If playback fails, preserve both files along with the matching
+operating-system crash report.
+
 ## Test
 
 ```bash
