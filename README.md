@@ -120,3 +120,13 @@ python -m pytest
 GitHub Actions runs the suite on macOS, Windows, and Linux. Codec source and
 provenance are documented in `vendor/tetra_codec/README.md`; redistribution is
 subject to the applicable ETSI terms.
+
+## License
+
+Original Audio Interleaver code and documentation are licensed under the MIT
+License. The ETSI-derived codec files under `vendor/tetra_codec/source/` and
+`vendor/tetra_codec/include/` are third-party material and are not covered by
+the MIT License. The combined repository and distributions should therefore
+not be described simply as MIT-licensed. See `LICENSE` and
+`THIRD_PARTY_NOTICES.md` for the precise scope, provenance, warranty, and patent
+notices.
