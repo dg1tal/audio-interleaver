@@ -99,10 +99,11 @@ def select_source(slot_index: int, crossfader: float) -> SourceId:
     if position >= 1.0:
         return "B"
 
-    # This error-distribution sequence starts on A and accumulates the requested
-    # B share. At 0.5 it is exactly A, B, A, B; other positions remain even.
-    previous_total = math.floor(slot_index * position + 1e-12)
-    next_total = math.floor((slot_index + 1) * position + 1e-12)
+    # Front-load B's share in each error-distribution cycle so chunks from the
+    # second source are inserted from the beginning. At 0.5 this is exactly
+    # B, A, B, A; other positions remain evenly distributed.
+    previous_total = math.ceil(slot_index * position - 1e-12)
+    next_total = math.ceil((slot_index + 1) * position - 1e-12)
     return "B" if next_total > previous_total else "A"
 
 

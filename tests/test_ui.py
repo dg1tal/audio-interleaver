@@ -37,10 +37,10 @@ def test_interleave_timeline_tracks_slot_selection_and_position(qtbot):
     qtbot.addWidget(timeline)
 
     timeline.set_engine(engine)
-    assert timeline.slot_sources == ("A", "B", "A", "B")
+    assert timeline.slot_sources == ("B", "A", "B", "A")
 
     timeline.set_crossfader(0.25)
-    assert timeline.slot_sources == ("A", "A", "A", "B")
+    assert timeline.slot_sources == ("B", "A", "A", "A")
 
     timeline.set_position(0.72)
     assert timeline.position == 0.72

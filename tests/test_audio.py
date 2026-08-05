@@ -27,9 +27,9 @@ def audio(values, sample_rate=1000, channels=1) -> LoadedAudio:
     ("position", "expected"),
     [
         (0.0, "AAAAAAAA"),
-        (0.25, "AAABAAAB"),
-        (0.5, "ABABABAB"),
-        (0.75, "ABBBABBB"),
+        (0.25, "BAAABAAA"),
+        (0.5, "BABABABA"),
+        (0.75, "BBBABBBA"),
         (1.0, "BBBBBBBB"),
     ],
 )
@@ -49,9 +49,9 @@ def test_center_uses_shared_timeline_slots():
 
     rendered = engine.render(0.5)[:, 0]
 
-    np.testing.assert_allclose(rendered[:360], 0.1)
-    np.testing.assert_allclose(rendered[360:720], 0.8)
-    np.testing.assert_allclose(rendered[720:], 0.1)
+    np.testing.assert_allclose(rendered[:360], 0.8)
+    np.testing.assert_allclose(rendered[360:720], 0.1)
+    np.testing.assert_allclose(rendered[720:], 0.8)
 
 
 def test_endpoints_select_only_one_source():
@@ -113,12 +113,12 @@ def test_source_switch_has_equal_power_smoothing():
     first, previous = engine.render_slot(0, 0.5)
     second, _ = engine.render_slot(1, 0.5, previous)
 
-    assert np.all(first == 0.0)
+    assert np.all(first == 1.0)
     transition = second[:5, 0]
-    assert transition[0] == pytest.approx(0.0)
-    assert transition[-1] == pytest.approx(1.0)
-    assert np.all(np.diff(transition) >= 0)
-    np.testing.assert_allclose(second[5:], 1.0)
+    assert transition[0] == pytest.approx(1.0)
+    assert transition[-1] == pytest.approx(0.0, abs=1e-7)
+    assert np.all(np.diff(transition) <= 0)
+    np.testing.assert_allclose(second[5:], 0.0)
 
 
 def test_configurable_chunk_and_crossfade_durations():

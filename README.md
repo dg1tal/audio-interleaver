@@ -5,7 +5,7 @@ on a shared timeline. The output is divided into configurable chunks, and the
 selection crossfader controls how many chunks come from each source:
 
 - **A only:** every slot uses source A.
-- **Center:** slots alternate A, B, A, B.
+- **Center:** slots alternate B, A, B, A, inserting source B from the start.
 - **B only:** every slot uses source B.
 - **Between those points:** A and B slots are distributed evenly in the chosen
   proportion.
