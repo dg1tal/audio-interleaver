@@ -115,6 +115,7 @@ class RegionInsert:
     b_source_slot: int = 0
     output_slot: int = 0
     length_slots: int = 1
+    silence_after_b_end: bool = False
 
     def __post_init__(self) -> None:
         if self.b_source_slot < 0:
@@ -332,6 +333,7 @@ class AudioEngine:
         source_id: SourceId,
         first_chunk: int,
         chunk_count: int,
+        silence_after_end: bool = False,
     ) -> np.ndarray:
         """Return a whole-chunk source selection, padding its final chunk."""
 
@@ -339,11 +341,18 @@ class AudioEngine:
             raise ValueError("first_chunk must be non-negative")
         if chunk_count < 1:
             raise ValueError("chunk_count must be positive")
-        if first_chunk + chunk_count > self.source_chunk_count(source_id):
+        if (
+            not silence_after_end
+            and first_chunk + chunk_count > self.source_chunk_count(source_id)
+        ):
             raise ValueError("source region extends beyond the available chunks")
         return np.concatenate(
             [
-                self._chunk(source_id, first_chunk + offset, self.slot_frames)
+                np.zeros((self.slot_frames, self.channels), dtype=np.float32)
+                if first_chunk + offset >= self.source_chunk_count(source_id)
+                else self._chunk(
+                    source_id, first_chunk + offset, self.slot_frames
+                )
                 for offset in range(chunk_count)
             ]
         )
@@ -369,7 +378,17 @@ class AudioEngine:
             )
         if source_chunk_index < 0:
             raise ValueError("source_chunk_index must be non-negative")
-        result = self.preview_chunk(source_id, source_chunk_index, slot_index)
+        silent_b_tail = (
+            source_id == "B"
+            and isinstance(settings, RegionInsert)
+            and settings.silence_after_b_end
+            and source_chunk_index >= self.source_chunk_count("B")
+        )
+        result = (
+            np.zeros((self.slot_frames, self.channels), dtype=np.float32)
+            if silent_b_tail
+            else self.preview_chunk(source_id, source_chunk_index, slot_index)
+        )
 
         fade_length = min(
             self.smoothing_frames,

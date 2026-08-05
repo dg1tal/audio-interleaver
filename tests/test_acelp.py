@@ -79,6 +79,16 @@ class RecordingCodec:
         return np.zeros(symbols.frame_count * ACELP_FRAME_SAMPLES, dtype=np.int16)
 
 
+class PcmRecordingCodec(RecordingCodec):
+    def __init__(self):
+        super().__init__()
+        self.encoded_pcm = []
+
+    def encode(self, pcm):
+        self.encoded_pcm.append(np.asarray(pcm).copy())
+        return super().encode(pcm)
+
+
 def test_source_a_anchors_timeline_even_when_b_is_longer():
     engine = AcelpEngine(
         audio(np.zeros(700)),
@@ -127,6 +137,35 @@ def test_restart_mode_resets_for_every_active_b_chunk():
     )
 
     assert codec.encoded_lengths == [1920, 480, 480]
+
+
+@pytest.mark.parametrize("encoder_mode", ["one_stream", "restart_each_chunk"])
+def test_region_silence_tail_encodes_zero_pcm(encoder_mode):
+    codec = PcmRecordingCodec()
+    engine = AcelpEngine(
+        audio(np.zeros(1920)),
+        audio(np.full(600, 0.25)),
+        slot_ms=60,
+        codec=codec,
+    )
+
+    engine.render_symbols(
+        RegionInsert(
+            b_source_slot=1,
+            output_slot=0,
+            length_slots=4,
+            silence_after_b_end=True,
+        ),
+        encoder_mode,
+    )
+
+    b_pcm = (
+        codec.encoded_pcm[1].reshape(4, 480)
+        if encoder_mode == "one_stream"
+        else np.stack(codec.encoded_pcm[1:])
+    )
+    assert np.any(b_pcm[0])
+    np.testing.assert_array_equal(b_pcm[1:], 0)
 
 
 def test_stereo_is_averaged_and_resampled_to_codec_rate():

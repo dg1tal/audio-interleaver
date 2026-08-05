@@ -198,6 +198,56 @@ def test_region_insert_mode_controls_source_window_and_output_position(qtbot):
     )
 
 
+def test_region_silence_checkbox_extends_length_without_adding_a_row(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    source_a = LoadedAudio(np.zeros((900, 1), dtype=np.float32), 1000)
+    source_b = LoadedAudio(np.ones((250, 1), dtype=np.float32), 1000)
+    window._source_a = source_a
+    window._source_b = source_b
+    window._rebuild_engine()
+    window.mode_selector.setCurrentIndex(1)
+    window.chunk_duration_input.setValue(100)
+
+    assert window.region_length_slider.maximum() == 3
+    assert window.region_silence_checkbox.isEnabled()
+    region_height = window.region_controls.sizeHint().height()
+
+    window.region_output_slider.setValue(3)
+    window.region_silence_checkbox.setChecked(True)
+    window.region_source_slider.setValue(3)
+    window.region_length_slider.setValue(7)
+
+    assert window.region_controls.sizeHint().height() == region_height
+    assert window.region_length_slider.maximum() == 7
+    assert window._settings() == RegionInsert(
+        b_source_slot=2,
+        output_slot=2,
+        length_slots=7,
+        silence_after_b_end=True,
+    )
+    assert window.interleave_timeline.slot_sources == tuple("AABBBBBBB")
+    assert window.interleave_timeline.waveform_chunk_indices("B") == (
+        None,
+        None,
+        2,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+
+    window.region_output_slider.setValue(7)
+    assert window.region_length_slider.maximum() == 3
+    assert window.region_length_slider.value() == 3
+
+    window.region_silence_checkbox.setChecked(False)
+    assert window.region_length_slider.maximum() == 3
+    assert window.region_source_slider.maximum() == 1
+
+
 def test_duration_sliders_and_numeric_inputs_stay_synchronized(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
@@ -232,6 +282,7 @@ def test_duration_controls_are_arranged_side_by_side(qtbot):
     layout = window.duration_controls.layout()
     assert layout.itemAt(0).widget() is window.chunk_duration_group
     assert layout.itemAt(1).widget() is window.crossfade_duration_group
+    assert layout.itemAt(2).widget() is window.b_encoder_controls
 
 
 def test_acelp_stage_uses_legal_frame_duration_positions(qtbot):
@@ -253,7 +304,7 @@ def test_acelp_stage_uses_legal_frame_duration_positions(qtbot):
     assert window.chunk_duration_slider.value() == 12
     assert window.chunk_duration_input.value() == 360
     assert window.chunk_duration_input.singleStep() == 30
-    assert not window.crossfade_duration_group.isEnabled()
+    assert window.crossfade_duration_group.isHidden()
     assert not window.b_encoder_controls.isHidden()
     assert window.one_stream_radio.isChecked()
     assert not window.restart_chunk_radio.isChecked()

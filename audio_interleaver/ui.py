@@ -233,11 +233,22 @@ class InterleaveTimeline(QWidget):
             if isinstance(self._settings, RegionInsert):
                 for index, selected_source in enumerate(self._slot_sources):
                     chunk_indices["A"].append(index)
-                    chunk_indices["B"].append(
+                    b_chunk_index = (
                         self._engine.source_chunk_index_for_slot(
                             index, self._settings, "B"
                         )
                         if selected_source == "B"
+                        else None
+                    )
+                    silent_b_tail = (
+                        self._settings.silence_after_b_end
+                        and b_chunk_index is not None
+                        and b_chunk_index
+                        >= self._engine.source_chunk_count("B")
+                    )
+                    chunk_indices["B"].append(
+                        b_chunk_index
+                        if selected_source == "B" and not silent_b_tail
                         else None
                     )
             else:
@@ -447,6 +458,7 @@ class MainWindow(QMainWindow):
         self._region_b_source_slot = 0
         self._region_output_slot = 0
         self._region_length_slots = 1
+        self._region_silence_after_b_end = False
         self._raw_chunk_ms = DEFAULT_CHUNK_MS
         self._acelp_chunk_ms = DEFAULT_CHUNK_MS
         self._chunk_ms = self._raw_chunk_ms
@@ -545,7 +557,7 @@ class MainWindow(QMainWindow):
         self.configuration_panel = fader_panel
         fader_layout = QVBoxLayout(fader_panel)
         fader_layout.setContentsMargins(22, 18, 22, 18)
-        fader_layout.setSpacing(6)
+        fader_layout.setSpacing(5)
 
         stage_header = QHBoxLayout()
         stage_title = QLabel("PROCESSING STAGE")
@@ -568,10 +580,15 @@ class MainWindow(QMainWindow):
         fader_layout.addLayout(stage_header)
 
         self.b_encoder_controls = QWidget()
-        b_encoder_layout = QHBoxLayout(self.b_encoder_controls)
+        b_encoder_layout = QVBoxLayout(self.b_encoder_controls)
         b_encoder_layout.setContentsMargins(0, 0, 0, 0)
+        b_encoder_layout.setSpacing(6)
+        b_encoder_header = QHBoxLayout()
         b_encoder_title = QLabel("B ENCODER STATE")
         b_encoder_title.setObjectName("sectionTitle")
+        b_encoder_header.addWidget(b_encoder_title)
+        b_encoder_header.addStretch()
+        b_encoder_layout.addLayout(b_encoder_header)
         self.one_stream_radio = QRadioButton("One stream")
         self.restart_chunk_radio = QRadioButton("Restart every chunk")
         self.restart_chunk_radio.setToolTip(
@@ -583,12 +600,12 @@ class MainWindow(QMainWindow):
         self.b_encoder_button_group.addButton(self.restart_chunk_radio)
         self.one_stream_radio.setChecked(True)
         self.restart_chunk_radio.toggled.connect(self._on_b_encoder_mode_changed)
-        b_encoder_layout.addWidget(b_encoder_title)
-        b_encoder_layout.addStretch()
-        b_encoder_layout.addWidget(self.one_stream_radio)
-        b_encoder_layout.addWidget(self.restart_chunk_radio)
+        b_encoder_options = QHBoxLayout()
+        b_encoder_options.addWidget(self.one_stream_radio)
+        b_encoder_options.addWidget(self.restart_chunk_radio)
+        b_encoder_options.addStretch()
+        b_encoder_layout.addLayout(b_encoder_options)
         self.b_encoder_controls.setVisible(False)
-        fader_layout.addWidget(self.b_encoder_controls)
 
         self.acelp_banner = QLabel(
             "ACELP settings are fixed during playback; stop to edit."
@@ -740,8 +757,15 @@ class MainWindow(QMainWindow):
         region_length_title.setObjectName("sectionTitle")
         self.region_length_label = QLabel("1 chunk")
         self.region_length_label.setObjectName("settingValue")
+        self.region_silence_checkbox = QCheckBox("Silence after B ends")
+        self.region_silence_checkbox.setEnabled(False)
+        self.region_silence_checkbox.toggled.connect(
+            self._on_region_silence_changed
+        )
         region_length_header.addWidget(region_length_title)
         region_length_header.addStretch()
+        region_length_header.addWidget(self.region_silence_checkbox)
+        region_length_header.addSpacing(12)
         region_length_header.addWidget(self.region_length_label)
         region_layout.addLayout(region_length_header)
         self.region_length_slider = QSlider(Qt.Orientation.Horizontal)
@@ -854,6 +878,7 @@ class MainWindow(QMainWindow):
 
         duration_controls_layout.addWidget(self.chunk_duration_group, 1)
         duration_controls_layout.addWidget(self.crossfade_duration_group, 1)
+        duration_controls_layout.addWidget(self.b_encoder_controls, 1)
         fader_layout.addSpacing(8)
         fader_layout.addWidget(self.duration_controls)
 
@@ -931,7 +956,7 @@ class MainWindow(QMainWindow):
             QLabel#subtitle { color: #9ca3b2; font-size: 14px; }
             QLabel#acelpBanner {
                 color: #f5d08a; background: #3a3223; border: 1px solid #66552f;
-                border-radius: 5px; padding: 6px;
+                border-radius: 5px; padding: 4px 6px;
             }
             QFrame#sourceCard, QFrame#faderPanel, QFrame#transport {
                 background: #20232b; border: 1px solid #30343e; border-radius: 10px;
@@ -1035,7 +1060,15 @@ class MainWindow(QMainWindow):
 
     def _on_region_output_changed(self, chunk_number: int) -> None:
         self._region_output_slot = chunk_number - 1
-        self.region_output_label.setText(f"Chunk {chunk_number}")
+        self._sync_region_controls()
+        if self._mode == "region":
+            self.interleave_timeline.set_settings(self._settings())
+
+    def _on_region_silence_changed(self, checked: bool) -> None:
+        if self._preview_target == "region-B":
+            self._stop_preview(wait=True)
+        self._region_silence_after_b_end = checked
+        self._sync_region_controls()
         if self._mode == "region":
             self.interleave_timeline.set_settings(self._settings())
 
@@ -1070,6 +1103,7 @@ class MainWindow(QMainWindow):
             b_source_slot=self._region_b_source_slot,
             output_slot=self._region_output_slot,
             length_slots=self._region_length_slots,
+            silence_after_b_end=self._region_silence_after_b_end,
         )
 
     def _settings(self) -> InterleaveSettings:
@@ -1081,7 +1115,7 @@ class MainWindow(QMainWindow):
         self.b_encoder_controls.setVisible(acelp_enabled)
         self.acelp_banner.setVisible(acelp_enabled)
         self.symbol_export_button.setVisible(acelp_enabled)
-        self.crossfade_duration_group.setEnabled(not acelp_enabled)
+        self.crossfade_duration_group.setVisible(not acelp_enabled)
         self._chunk_ms = (
             self._acelp_chunk_ms if acelp_enabled else self._raw_chunk_ms
         )
@@ -1280,6 +1314,7 @@ class MainWindow(QMainWindow):
         )
         for control in controls:
             control.blockSignals(True)
+        self.region_silence_checkbox.blockSignals(True)
 
         if self._engine is None:
             self._region_b_source_slot = 0
@@ -1289,27 +1324,39 @@ class MainWindow(QMainWindow):
                 control.setRange(1, 1)
                 control.setValue(1)
                 control.setEnabled(False)
+            self.region_silence_checkbox.setEnabled(False)
         else:
             source_chunks = self._engine.source_chunk_count("B")
             output_chunks = self._engine.slot_count
-            self._region_length_slots = min(
-                max(1, self._region_length_slots), source_chunks
-            )
-            max_source_start = max(0, source_chunks - self._region_length_slots)
-            self._region_b_source_slot = min(
-                max(0, self._region_b_source_slot), max_source_start
-            )
             self._region_output_slot = min(
                 max(0, self._region_output_slot), output_chunks - 1
             )
+            if self._region_silence_after_b_end:
+                max_length = output_chunks - self._region_output_slot
+                max_source_start = source_chunks - 1
+            else:
+                max_length = source_chunks
+                self._region_length_slots = min(
+                    max(1, self._region_length_slots), max_length
+                )
+                max_source_start = max(
+                    0, source_chunks - self._region_length_slots
+                )
+            self._region_length_slots = min(
+                max(1, self._region_length_slots), max_length
+            )
+            self._region_b_source_slot = min(
+                max(0, self._region_b_source_slot), max_source_start
+            )
             self.region_source_slider.setRange(1, max_source_start + 1)
             self.region_source_slider.setValue(self._region_b_source_slot + 1)
-            self.region_length_slider.setRange(1, source_chunks)
+            self.region_length_slider.setRange(1, max_length)
             self.region_length_slider.setValue(self._region_length_slots)
             self.region_output_slider.setRange(1, output_chunks)
             self.region_output_slider.setValue(self._region_output_slot + 1)
             for control in controls:
                 control.setEnabled(True)
+            self.region_silence_checkbox.setEnabled(True)
 
         self.region_source_label.setText(
             f"Chunk {self._region_b_source_slot + 1}"
@@ -1320,6 +1367,7 @@ class MainWindow(QMainWindow):
         self.region_output_label.setText(f"Chunk {self._region_output_slot + 1}")
         for control in controls:
             control.blockSignals(False)
+        self.region_silence_checkbox.blockSignals(False)
 
     def _on_loop_changed(self, checked: bool) -> None:
         self._loop = checked
@@ -1464,7 +1512,10 @@ class MainWindow(QMainWindow):
         if self._engine is None or self._mode != "region":
             return
         samples = self._engine.source_region(
-            "B", self._region_b_source_slot, self._region_length_slots
+            "B",
+            self._region_b_source_slot,
+            self._region_length_slots,
+            self._region_silence_after_b_end,
         )
         audio = LoadedAudio(samples, self._engine.sample_rate)
         self._start_preview(audio, target)

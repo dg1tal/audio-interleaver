@@ -215,14 +215,26 @@ class AcelpEngine:
         return self._chunk_float(source_id, chunk_index)
 
     def source_region(
-        self, source_id: SourceId, first_chunk: int, chunk_count: int
+        self,
+        source_id: SourceId,
+        first_chunk: int,
+        chunk_count: int,
+        silence_after_end: bool = False,
     ) -> np.ndarray:
         if first_chunk < 0 or chunk_count < 1:
             raise ValueError("invalid source region")
-        if first_chunk + chunk_count > self.source_chunk_count(source_id):
+        if (
+            not silence_after_end
+            and first_chunk + chunk_count > self.source_chunk_count(source_id)
+        ):
             raise ValueError("source region extends beyond the available chunks")
         return np.concatenate(
-            [self._chunk_float(source_id, first_chunk + i) for i in range(chunk_count)]
+            [
+                np.zeros((self.slot_frames, 1), dtype=np.float32)
+                if first_chunk + i >= self.source_chunk_count(source_id)
+                else self._chunk_float(source_id, first_chunk + i)
+                for i in range(chunk_count)
+            ]
         )
 
     def _a_pcm(self) -> np.ndarray:
@@ -259,12 +271,19 @@ class AcelpEngine:
         if not active:
             return AcelpSymbols(mixed)
 
-        b_chunks = [
-            self._b_chunk_pcm(
-                self.source_chunk_index_for_slot(slot, settings, "B")
+        b_chunks = []
+        for slot in active:
+            chunk_index = self.source_chunk_index_for_slot(slot, settings, "B")
+            silent_b_tail = (
+                isinstance(settings, RegionInsert)
+                and settings.silence_after_b_end
+                and chunk_index >= self.source_chunk_count("B")
             )
-            for slot in active
-        ]
+            b_chunks.append(
+                np.zeros(self.slot_frames, dtype=np.int16)
+                if silent_b_tail
+                else self._b_chunk_pcm(chunk_index)
+            )
         if cancel_event is not None and cancel_event.is_set():
             raise RenderingCancelled("Rendering was cancelled.")
         if b_encoder_mode == "one_stream":

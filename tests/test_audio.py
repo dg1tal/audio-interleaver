@@ -207,6 +207,46 @@ def test_region_insert_is_clipped_only_by_the_output_timeline():
     assert "".join(select_source(index, 6, settings) for index in range(6)) == "AAAABB"
 
 
+def test_region_insert_can_replace_chunks_after_b_ends_with_silence():
+    source_a = audio(np.full(500, 0.25, dtype=np.float32))
+    source_b = audio(np.full(150, 0.75, dtype=np.float32))
+    engine = AudioEngine(
+        source_a,
+        source_b,
+        slot_ms=100,
+        smoothing_ms=0,
+    )
+    settings = RegionInsert(
+        b_source_slot=1,
+        output_slot=1,
+        length_slots=4,
+        silence_after_b_end=True,
+    )
+
+    rendered = engine.render(settings)[:, 0].reshape(5, 100)
+
+    np.testing.assert_allclose(rendered[0], 0.25)
+    np.testing.assert_allclose(rendered[1, :50], 0.75)
+    np.testing.assert_allclose(rendered[1, 50:], 0.0)
+    np.testing.assert_allclose(rendered[2:], 0.0)
+
+
+def test_source_region_can_pad_all_chunks_after_source_end():
+    engine = AudioEngine(
+        audio(np.zeros(500, dtype=np.float32)),
+        audio(np.ones(150, dtype=np.float32)),
+        slot_ms=100,
+        smoothing_ms=0,
+    )
+
+    region = engine.source_region(
+        "B", first_chunk=1, chunk_count=3, silence_after_end=True
+    )[:, 0]
+
+    np.testing.assert_allclose(region[:50], 1.0)
+    np.testing.assert_allclose(region[50:], 0.0)
+
+
 def test_final_partial_slot_is_preserved_and_padded_with_silence():
     source_a = audio(np.full(850, 0.25, dtype=np.float32))
     engine = AudioEngine(

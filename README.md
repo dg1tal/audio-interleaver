@@ -23,8 +23,11 @@ The mode selector also provides **Region Insert**. In this mode, source A forms
 the baseline output timeline and a contiguous window from source B replaces a
 contiguous range of A chunks. Independent snapping controls select the first B
 source chunk, the region length in whole chunks, and the output chunk where the
-replacement begins. The B source window always remains intact; only placement
-beyond the end of the output timeline clips the inserted region.
+replacement begins. By default, the B source window always remains intact and
+only placement beyond the end of the output timeline clips the inserted region.
+Enable **Silence after B ends** to extend the region through the remaining
+output timeline: B plays once from the selected source chunk, then zero-valued
+chunks replace A instead of B looping.
 
 The preview places source A's waveform above the interleave lanes and source
 B's waveform below them. Source A remains visible in gray beneath slots
@@ -67,6 +70,8 @@ pattern or inserted region are encoded. **One stream** carries encoder state
 continuously across active B chunks; **Restart encoder every B chunk** starts
 each selected B chunk from fresh state. The decoder remains continuous, so
 state discontinuities introduced by symbol replacement remain audible.
+For an extended Region Insert, silent tail chunks are encoded from zero PCM
+using the selected B encoder-state mode before their symbols replace source A.
 
 ACELP chunk durations are legal multiples of the codec's 30 ms speech frame.
 The slider provides values from 30 to 1,980 ms; typed values snap to the
