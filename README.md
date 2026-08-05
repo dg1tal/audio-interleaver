@@ -7,9 +7,10 @@ PCM WAV audio.
 Two processing stages are available:
 
 - **Raw wave** replaces PCM samples.
-- **ACELP symbols** encodes both sources with the fixed-point ETSI TETRA
-  full-rate speech codec, replaces 137-bit vocoder frames, then decodes the
-  result. It does not simulate TETRA channel coding or radio interleaving.
+- **ACELP symbol insertion** encodes A as a continuous stream, replaces selected
+  137-bit vocoder frames with independently encoded B frames, then decodes the
+  mixed stream continuously. It does not simulate TETRA channel coding or radio
+  interleaving.
 
 ## Interleave modes
 
@@ -38,8 +39,9 @@ duration. Crossfading is disabled.
 
 Source A is encoded as one complete stream. Only active B chunks are encoded:
 
-- **One stream** preserves B encoder state across active chunks.
-- **Restart every chunk** resets the B encoder for each chunk.
+- **Continuous selected B chunks** preserves independent B encoder state across
+  active chunks. It does not inherit A encoder state.
+- **Restart each B chunk** starts every active B chunk with fresh encoder state.
 
 For an extended Region Insert, zero PCM is encoded for the silent B tail using
 the selected encoder-state mode. Decoding always uses one continuous stream.

@@ -68,6 +68,7 @@ def test_spe_format_has_zero_bfi_and_one_little_endian_word_per_bit():
 class RecordingCodec:
     def __init__(self):
         self.encoded_lengths = []
+        self.decoded_streams = []
 
     def encode(self, pcm):
         frame_count = len(pcm) // ACELP_FRAME_SAMPLES
@@ -76,6 +77,7 @@ class RecordingCodec:
         return AcelpSymbols(np.full((frame_count, 18), value, dtype=np.uint8))
 
     def decode(self, symbols):
+        self.decoded_streams.append(symbols.packed.copy())
         return np.zeros(symbols.frame_count * ACELP_FRAME_SAMPLES, dtype=np.int16)
 
 
@@ -102,7 +104,7 @@ def test_source_a_anchors_timeline_even_when_b_is_longer():
     assert engine.duration == pytest.approx(0.12)
 
 
-def test_one_stream_encodes_only_active_b_chunks_in_one_call():
+def test_one_stream_inserts_active_b_symbols_and_decodes_mixed_stream_once():
     codec = RecordingCodec()
     engine = AcelpEngine(
         audio(np.zeros(1440)),
@@ -111,15 +113,15 @@ def test_one_stream_encodes_only_active_b_chunks_in_one_call():
         codec=codec,
     )
 
-    symbols = engine.render_symbols(
-        InterleavePattern(fill=1.0), "one_stream"
-    )
+    engine.render(InterleavePattern(fill=1.0), "one_stream")
 
     # A has three 60 ms slots; only the middle B slot is encoded.
     assert codec.encoded_lengths == [1440, 480]
-    assert np.all(symbols.packed[:2] == 1)
-    assert np.all(symbols.packed[2:4] == 2)
-    assert np.all(symbols.packed[4:] == 1)
+    assert len(codec.decoded_streams) == 1
+    mixed = codec.decoded_streams[0]
+    assert np.all(mixed[:2] == 1)
+    assert np.all(mixed[2:4] == 2)
+    assert np.all(mixed[4:] == 1)
 
 
 def test_restart_mode_resets_for_every_active_b_chunk():

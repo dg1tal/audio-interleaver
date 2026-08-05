@@ -299,6 +299,7 @@ def test_acelp_stage_uses_legal_frame_duration_positions(qtbot):
 
     assert isinstance(window._engine, AcelpEngine)
     assert window.acelp_stage_radio.isChecked()
+    assert window.acelp_stage_radio.text() == "ACELP symbol insertion"
     assert not window.raw_stage_radio.isChecked()
     assert window.chunk_duration_slider.minimum() == 1
     assert window.chunk_duration_slider.maximum() == 66
@@ -307,9 +308,15 @@ def test_acelp_stage_uses_legal_frame_duration_positions(qtbot):
     assert window.chunk_duration_input.singleStep() == 30
     assert window.crossfade_duration_group.isHidden()
     assert not window.b_encoder_controls.isHidden()
+    assert window.b_encoder_title.text() == "B SYMBOL ENCODING"
     assert window.one_stream_radio.isChecked()
+    assert window.one_stream_radio.text() == "Continuous selected B chunks"
     assert not window.restart_chunk_radio.isChecked()
+    assert window.restart_chunk_radio.text() == "Restart each B chunk"
     assert not window.acelp_banner.isHidden()
+    assert window.acelp_banner.text() == (
+        "Continuous A encode → insert B symbols → continuous mixed decode"
+    )
     assert not window.symbol_export_button.isHidden()
 
     window.restart_chunk_radio.setChecked(True)

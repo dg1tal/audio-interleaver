@@ -563,9 +563,10 @@ class MainWindow(QMainWindow):
         stage_title = QLabel("PROCESSING STAGE")
         stage_title.setObjectName("sectionTitle")
         self.raw_stage_radio = QRadioButton("Raw wave")
-        self.acelp_stage_radio = QRadioButton("ACELP symbols")
+        self.acelp_stage_radio = QRadioButton("ACELP symbol insertion")
         self.acelp_stage_radio.setToolTip(
-            "Encode and replace complete ETSI TETRA ACELP speech frames"
+            "Encode A continuously, replace selected frames with independently "
+            "encoded B symbols, then decode the mixed stream continuously"
         )
         self.stage_button_group = QButtonGroup(self)
         self.stage_button_group.setExclusive(True)
@@ -584,15 +585,20 @@ class MainWindow(QMainWindow):
         b_encoder_layout.setContentsMargins(0, 0, 0, 0)
         b_encoder_layout.setSpacing(6)
         b_encoder_header = QHBoxLayout()
-        b_encoder_title = QLabel("B ENCODER STATE")
-        b_encoder_title.setObjectName("sectionTitle")
-        b_encoder_header.addWidget(b_encoder_title)
+        self.b_encoder_title = QLabel("B SYMBOL ENCODING")
+        self.b_encoder_title.setObjectName("sectionTitle")
+        b_encoder_header.addWidget(self.b_encoder_title)
         b_encoder_header.addStretch()
         b_encoder_layout.addLayout(b_encoder_header)
-        self.one_stream_radio = QRadioButton("One stream")
-        self.restart_chunk_radio = QRadioButton("Restart every chunk")
+        self.one_stream_radio = QRadioButton("Continuous selected B chunks")
+        self.one_stream_radio.setToolTip(
+            "Encode active B chunks as one independent stream; B does not "
+            "inherit source A encoder state"
+        )
+        self.restart_chunk_radio = QRadioButton("Restart each B chunk")
         self.restart_chunk_radio.setToolTip(
-            "Restart ACELP encoder state before every active B chunk"
+            "Encode every active B chunk with fresh encoder state; B does not "
+            "inherit source A encoder state"
         )
         self.b_encoder_button_group = QButtonGroup(self)
         self.b_encoder_button_group.setExclusive(True)
@@ -608,7 +614,11 @@ class MainWindow(QMainWindow):
         self.b_encoder_controls.setVisible(False)
 
         self.acelp_banner = QLabel(
-            "ACELP settings are fixed during playback; stop to edit."
+            "Continuous A encode → insert B symbols → continuous mixed decode"
+        )
+        self.acelp_banner.setToolTip(
+            "A is encoded once. Selected A frames are replaced with B frames. "
+            "The complete mixed symbol stream is decoded in one pass."
         )
         self.acelp_banner.setObjectName("acelpBanner")
         self.acelp_banner.setWordWrap(True)
@@ -876,9 +886,9 @@ class MainWindow(QMainWindow):
         )
         crossfade_group_layout.addWidget(self.crossfade_duration_slider)
 
-        duration_controls_layout.addWidget(self.chunk_duration_group, 1)
-        duration_controls_layout.addWidget(self.crossfade_duration_group, 1)
-        duration_controls_layout.addWidget(self.b_encoder_controls, 1)
+        duration_controls_layout.addWidget(self.chunk_duration_group, 2)
+        duration_controls_layout.addWidget(self.crossfade_duration_group, 2)
+        duration_controls_layout.addWidget(self.b_encoder_controls, 3)
         fader_layout.addSpacing(8)
         fader_layout.addWidget(self.duration_controls)
 
