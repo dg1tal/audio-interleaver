@@ -10,7 +10,11 @@ from audio_interleaver.audio import (
     LoadedAudio,
     RegionInsert,
 )
-from audio_interleaver.playback import AudioPreviewController, PlaybackController
+from audio_interleaver.playback import (
+    AudioPreviewController,
+    PlaybackController,
+    RenderedPlaybackController,
+)
 
 
 class FakeOutputStream:
@@ -199,3 +203,27 @@ def test_audio_preview_stop_interrupts_playback_between_small_blocks(monkeypatch
     assert not stream.stopped
     assert sum(len(block) for block in stream.writes) < source.frames
     assert results == [("source-A", False)]
+
+
+def test_rendered_playback_reports_position_for_fixed_acelp_result(monkeypatch):
+    FakeOutputStream.instances.clear()
+    monkeypatch.setattr("audio_interleaver.playback.sd.OutputStream", FakeOutputStream)
+    source = LoadedAudio(np.full((400, 1), 0.2, dtype=np.float32), 8000)
+    positions = []
+    finished = threading.Event()
+    results = []
+    controller = RenderedPlaybackController(
+        on_position=positions.append,
+        on_finished=lambda natural: (results.append(natural), finished.set()),
+        on_error=lambda _message: None,
+    )
+
+    assert controller.start(source)
+    assert finished.wait(2)
+
+    stream = FakeOutputStream.instances[-1]
+    assert stream.kwargs["samplerate"] == 8000
+    assert stream.kwargs["channels"] == 1
+    np.testing.assert_allclose(np.concatenate(stream.writes), source.samples)
+    assert positions[-1] == source.duration
+    assert results == [True]

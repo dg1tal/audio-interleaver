@@ -5,6 +5,13 @@ independent, configurable chunks and places those chunks into a repeating
 output pattern. B occurrences are revealed from left to right, so adding more
 never moves an existing B chunk toward the beginning of the timeline.
 
+The **Processing Stage** switch selects either the original **Raw wave** path
+or an **ACELP symbols** path based on the fixed-point ETSI TETRA full-rate
+speech codec. Raw mode replaces PCM samples. ACELP mode downmixes each source
+to mono, resamples it to 8 kHz, encodes 30 ms speech frames, replaces complete
+groups of 137 codec bits, and continuously decodes the mixed symbol stream.
+It does not apply TETRA channel coding or radio-channel interleaving.
+
 The pattern controls choose whether the output starts with A or B, where the
 first alternate-source chunk occurs, and how many consecutive B chunks each
 occurrence contains. One B chunk per occurrence produces `A B A B A B`; two
@@ -46,12 +53,25 @@ silence-pads the rest of the chunk.
 ## Requirements
 
 - Python 3.11 or newer
+- A C compiler supported by Python/setuptools when installing from source
 - A working audio output device
 - WAV input files with mono or stereo audio
 
 The application supports WAV input and 16-bit PCM WAV output. Sources with
 different sample rates are resampled to the higher rate; mono is promoted to
 stereo when paired with a stereo source.
+
+In ACELP mode, source A is the complete fixed output timeline. Its final chunk
+is padded with silence when necessary. Only B chunks active in the current
+pattern or inserted region are encoded. **One stream** carries encoder state
+continuously across active B chunks; **Restart encoder every B chunk** starts
+each selected B chunk from fresh state. The decoder remains continuous, so
+state discontinuities introduced by symbol replacement remain audible.
+
+ACELP chunk durations are legal multiples of the codec's 30 ms speech frame.
+The slider provides values from 30 to 1,980 ms; typed values snap to the
+nearest legal duration, with exact ties rounded up. Raw and ACELP modes
+remember durations independently. PCM crossfading is disabled in ACELP mode.
 
 ### Linux system packages
 
@@ -74,7 +94,7 @@ The `.venv` directory is intentionally ignored by Git.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements-dev.txt
+python -m pip install -e ".[dev]"
 ```
 
 ### Windows PowerShell
@@ -82,12 +102,12 @@ python -m pip install -r requirements-dev.txt
 ```powershell
 py -m venv .venv
 .venv\Scripts\Activate.ps1
-python -m pip install -r requirements-dev.txt
+python -m pip install -e ".[dev]"
 ```
 
-For an application-only installation, use `requirements.txt` instead of
-`requirements-dev.txt`. The exact dependency versions are pinned in both the
-requirements files and `pyproject.toml`.
+For an application-only installation, use `python -m pip install -e .`. This
+also builds the native TETRA ACELP extension. Dependency versions remain pinned
+in the requirements files and `pyproject.toml`.
 
 ## Run
 
@@ -116,6 +136,19 @@ mode, **Preview B region** auditions exactly the selected whole-chunk source B
 window, including final-chunk silence padding. Use **Export WAV…** to render a
 complete file using a snapshot of the settings.
 
+In ACELP mode, pressing **Play** first prepares a fixed symbol-stage result.
+Settings and source loading remain locked until playback stops, as noted by
+the on-screen banner. Source-card previews continue to play the original WAV
+files. **Export WAV…** writes the decoded 8 kHz mono result, while **Export
+ACELP symbols…** writes the mixed stream as an ETSI simulation-format `.spe`
+file. Each 30 ms frame contains 138 little-endian 16-bit words: a zero
+bad-frame indicator followed by 137 words containing zero or one.
+
+The vendored codec wrapper and provenance are documented in
+`vendor/tetra_codec/README.md`. The codec algorithm and reference source are
+copyrighted by ETSI and should be redistributed only under the applicable
+ETSI terms.
+
 ## Test
 
 ```bash
@@ -125,7 +158,9 @@ python -m pytest
 The test suite covers deterministic occurrence patterns, B burst sizes, start
 and insertion controls, sequential source chunks, looping, partial final slots,
 format normalization, transition smoothing, live updates, WAV I/O, and a
-headless UI smoke test.
+headless UI smoke test. ACELP coverage includes native encoder state, frame
+packing, `.spe` serialization, source-A anchoring, active-only B encoding,
+per-chunk resets, downmixing, resampling, duration snapping, and UI lockout.
 
 The included GitHub Actions workflow runs this suite on macOS, Windows, and
 Linux with the oldest and newest supported Python versions.

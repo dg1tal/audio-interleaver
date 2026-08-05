@@ -7,6 +7,7 @@ from audio_interleaver.audio import (
     LoadedAudio,
     RegionInsert,
 )
+from audio_interleaver.acelp import AcelpEngine
 from audio_interleaver.ui import InterleaveTimeline, MainWindow
 
 
@@ -228,6 +229,60 @@ def test_duration_controls_are_arranged_side_by_side(qtbot):
     layout = window.duration_controls.layout()
     assert layout.itemAt(0).widget() is window.chunk_duration_group
     assert layout.itemAt(1).widget() is window.crossfade_duration_group
+
+
+def test_acelp_stage_uses_legal_frame_duration_positions(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    source = LoadedAudio(np.zeros((8000, 2), dtype=np.float32), 8000)
+    window._source_a = source
+    window._source_b = source
+    window._rebuild_engine()
+    window.chunk_duration_input.setValue(250)
+
+    window.stage_toggle.setChecked(True)
+
+    assert isinstance(window._engine, AcelpEngine)
+    assert window.stage_value_label.text() == "ACELP"
+    assert window.chunk_duration_slider.minimum() == 1
+    assert window.chunk_duration_slider.maximum() == 66
+    assert window.chunk_duration_slider.value() == 12
+    assert window.chunk_duration_input.value() == 360
+    assert window.chunk_duration_input.singleStep() == 30
+    assert not window.crossfade_duration_group.isEnabled()
+    assert not window.b_encoder_controls.isHidden()
+    assert not window.acelp_banner.isHidden()
+    assert not window.symbol_export_button.isHidden()
+
+    window.chunk_duration_input.setValue(45)
+    assert window.chunk_duration_input.value() == 60
+    assert window.chunk_duration_slider.value() == 2
+
+    window.stage_toggle.setChecked(False)
+    assert window.chunk_duration_input.value() == 250
+    assert window.chunk_duration_slider.value() == 250
+
+    window.stage_toggle.setChecked(True)
+    assert window.chunk_duration_input.value() == 60
+
+
+def test_acelp_configuration_locks_during_preparation(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    source = LoadedAudio(np.zeros((8000, 1), dtype=np.float32), 8000)
+    window._source_a = source
+    window._source_b = source
+    window._rebuild_engine()
+    window.stage_toggle.setChecked(True)
+
+    window._acelp_prepare_cancel.clear()
+    window._acelp_preparing = True
+    window._refresh_actions()
+
+    assert not window.configuration_panel.isEnabled()
+    assert not window.export_button.isEnabled()
+    assert not window.symbol_export_button.isEnabled()
+    assert window.play_button.isEnabled()
 
 
 class FakePreviewPlayback:

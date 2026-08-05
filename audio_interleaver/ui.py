@@ -44,7 +44,19 @@ from .audio import (
     occurrence_capacity,
     write_wav,
 )
-from .playback import AudioPreviewController, PlaybackController
+from .acelp import (
+    ACELP_FRAME_MS,
+    ACELP_MAX_CHUNK_MS,
+    AcelpEngine,
+    BEncoderMode,
+    ProcessingStage,
+    snap_acelp_chunk_ms,
+)
+from .playback import (
+    AudioPreviewController,
+    PlaybackController,
+    RenderedPlaybackController,
+)
 
 
 SOURCE_A_COLOR = "#6ea8fe"
@@ -98,6 +110,9 @@ class _UiSignals(QObject):
     export_progress = Signal(int)
     export_finished = Signal(str)
     export_error = Signal(str)
+    acelp_ready = Signal(object)
+    acelp_prepare_error = Signal(str)
+    acelp_prepare_cancelled = Signal()
 
 
 class SourceCard(QFrame):
@@ -154,7 +169,7 @@ class InterleaveTimeline(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        self._engine: AudioEngine | None = None
+        self._engine: AudioEngine | AcelpEngine | None = None
         self._settings: InterleaveSettings = InterleavePattern()
         self._position = 0.0
         self._slot_sources: tuple[str, ...] = ()
@@ -187,7 +202,7 @@ class InterleaveTimeline(QWidget):
     def sizeHint(self) -> QSize:
         return QSize(640, 116)
 
-    def set_engine(self, engine: AudioEngine | None) -> None:
+    def set_engine(self, engine: AudioEngine | AcelpEngine | None) -> None:
         self._engine = engine
         self._position = 0.0
         self._rebuild_slots()
@@ -419,7 +434,9 @@ class MainWindow(QMainWindow):
 
         self._source_a: LoadedAudio | None = None
         self._source_b: LoadedAudio | None = None
-        self._engine: AudioEngine | None = None
+        self._engine: AudioEngine | AcelpEngine | None = None
+        self._stage: ProcessingStage = "raw"
+        self._b_encoder_mode: BEncoderMode = "one_stream"
         self._mode = "pattern"
         self._fill = 0.5
         self._starts_with: SourceId = "A"
@@ -428,13 +445,18 @@ class MainWindow(QMainWindow):
         self._region_b_source_slot = 0
         self._region_output_slot = 0
         self._region_length_slots = 1
-        self._chunk_ms = DEFAULT_CHUNK_MS
+        self._raw_chunk_ms = DEFAULT_CHUNK_MS
+        self._acelp_chunk_ms = DEFAULT_CHUNK_MS
+        self._chunk_ms = self._raw_chunk_ms
         self._crossfade_ms = DEFAULT_CROSSFADE_MS
         self._loop = False
         self._preview_target: str | None = None
         self._export_thread: threading.Thread | None = None
         self._export_cancel = threading.Event()
         self._exporting = False
+        self._acelp_prepare_thread: threading.Thread | None = None
+        self._acelp_prepare_cancel = threading.Event()
+        self._acelp_preparing = False
 
         self._signals = _UiSignals()
         self._signals.playback_position.connect(self._on_playback_position)
@@ -445,6 +467,11 @@ class MainWindow(QMainWindow):
         self._signals.export_progress.connect(self._on_export_progress)
         self._signals.export_finished.connect(self._on_export_finished)
         self._signals.export_error.connect(self._on_export_error)
+        self._signals.acelp_ready.connect(self._on_acelp_ready)
+        self._signals.acelp_prepare_error.connect(self._on_acelp_prepare_error)
+        self._signals.acelp_prepare_cancelled.connect(
+            self._on_acelp_prepare_cancelled
+        )
 
         self._playback = PlaybackController(
             on_position=self._signals.playback_position.emit,
@@ -454,6 +481,11 @@ class MainWindow(QMainWindow):
         self._preview_playback = AudioPreviewController(
             on_finished=self._signals.preview_finished.emit,
             on_error=self._signals.preview_error.emit,
+        )
+        self._rendered_playback = RenderedPlaybackController(
+            on_position=self._signals.playback_position.emit,
+            on_finished=self._signals.playback_finished.emit,
+            on_error=self._signals.playback_error.emit,
         )
 
         self._build_ui()
@@ -508,9 +540,53 @@ class MainWindow(QMainWindow):
 
         fader_panel = QFrame()
         fader_panel.setObjectName("faderPanel")
+        self.configuration_panel = fader_panel
         fader_layout = QVBoxLayout(fader_panel)
         fader_layout.setContentsMargins(22, 18, 22, 18)
         fader_layout.setSpacing(6)
+
+        stage_header = QHBoxLayout()
+        stage_title = QLabel("PROCESSING STAGE")
+        stage_title.setObjectName("sectionTitle")
+        self.stage_value_label = QLabel("Raw wave")
+        self.stage_value_label.setObjectName("settingValue")
+        self.stage_toggle = QCheckBox("ACELP symbols")
+        self.stage_toggle.setToolTip(
+            "Encode and replace complete ETSI TETRA ACELP speech frames"
+        )
+        self.stage_toggle.toggled.connect(self._on_stage_changed)
+        stage_header.addWidget(stage_title)
+        stage_header.addStretch()
+        stage_header.addWidget(self.stage_value_label)
+        stage_header.addWidget(self.stage_toggle)
+        fader_layout.addLayout(stage_header)
+
+        self.b_encoder_controls = QWidget()
+        b_encoder_layout = QHBoxLayout(self.b_encoder_controls)
+        b_encoder_layout.setContentsMargins(0, 0, 0, 0)
+        b_encoder_title = QLabel("B ENCODER STATE")
+        b_encoder_title.setObjectName("sectionTitle")
+        self.b_encoder_value_label = QLabel("One stream")
+        self.b_encoder_value_label.setObjectName("settingValue")
+        self.b_encoder_toggle = QCheckBox("Restart every chunk")
+        self.b_encoder_toggle.setToolTip(
+            "Unchecked: encode all active B chunks as one continuous stream"
+        )
+        self.b_encoder_toggle.toggled.connect(self._on_b_encoder_mode_changed)
+        b_encoder_layout.addWidget(b_encoder_title)
+        b_encoder_layout.addStretch()
+        b_encoder_layout.addWidget(self.b_encoder_value_label)
+        b_encoder_layout.addWidget(self.b_encoder_toggle)
+        self.b_encoder_controls.setVisible(False)
+        fader_layout.addWidget(self.b_encoder_controls)
+
+        self.acelp_banner = QLabel(
+            "ACELP settings are fixed during playback; stop to edit."
+        )
+        self.acelp_banner.setObjectName("acelpBanner")
+        self.acelp_banner.setWordWrap(True)
+        self.acelp_banner.setVisible(False)
+        fader_layout.addWidget(self.acelp_banner)
 
         mode_header = QHBoxLayout()
         mode_title = QLabel("MODE")
@@ -699,7 +775,7 @@ class MainWindow(QMainWindow):
         self.chunk_duration_input.setKeyboardTracking(False)
         self.chunk_duration_input.setObjectName("durationInput")
         self.chunk_duration_input.valueChanged.connect(
-            self._on_chunk_duration_changed
+            self._on_chunk_input_changed
         )
         chunk_header.addWidget(chunk_title)
         chunk_header.addStretch()
@@ -714,7 +790,7 @@ class MainWindow(QMainWindow):
         self.chunk_duration_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.chunk_duration_slider.setTickInterval(250)
         self.chunk_duration_slider.valueChanged.connect(
-            self._on_chunk_duration_changed
+            self._on_chunk_slider_changed
         )
         chunk_group_layout.addWidget(self.chunk_duration_slider)
 
@@ -796,6 +872,9 @@ class MainWindow(QMainWindow):
         self.play_button.clicked.connect(self._toggle_playback)
         self.export_button = QPushButton("Export WAV…")
         self.export_button.clicked.connect(self._export_wav)
+        self.symbol_export_button = QPushButton("Export ACELP symbols…")
+        self.symbol_export_button.clicked.connect(self._export_symbols)
+        self.symbol_export_button.setVisible(False)
         self.loop_checkbox = QCheckBox("Loop")
         self.loop_checkbox.setToolTip("Restart the complete result when playback ends")
         self.loop_checkbox.toggled.connect(self._on_loop_changed)
@@ -803,6 +882,7 @@ class MainWindow(QMainWindow):
         self.time_label.setObjectName("timeLabel")
         controls.addWidget(self.play_button)
         controls.addWidget(self.export_button)
+        controls.addWidget(self.symbol_export_button)
         controls.addWidget(self.loop_checkbox)
         controls.addStretch()
         controls.addWidget(self.time_label)
@@ -829,6 +909,10 @@ class MainWindow(QMainWindow):
             QLabel#heading { font-size: 30px; font-weight: 700; }
             QLabel#productSubheading { color: #7f8797; font-size: 11px; }
             QLabel#subtitle { color: #9ca3b2; font-size: 14px; }
+            QLabel#acelpBanner {
+                color: #f5d08a; background: #3a3223; border: 1px solid #66552f;
+                border-radius: 5px; padding: 6px;
+            }
             QFrame#sourceCard, QFrame#faderPanel, QFrame#transport {
                 background: #20232b; border: 1px solid #30343e; border-radius: 10px;
             }
@@ -970,21 +1054,86 @@ class MainWindow(QMainWindow):
     def _settings(self) -> InterleaveSettings:
         return self._region() if self._mode == "region" else self._pattern()
 
+    def _on_stage_changed(self, acelp_enabled: bool) -> None:
+        self._stop_all_playback(wait=True, reset=True)
+        self._stage = "acelp" if acelp_enabled else "raw"
+        self.stage_value_label.setText("ACELP" if acelp_enabled else "Raw wave")
+        self.b_encoder_controls.setVisible(acelp_enabled)
+        self.acelp_banner.setVisible(acelp_enabled)
+        self.symbol_export_button.setVisible(acelp_enabled)
+        self.crossfade_duration_group.setEnabled(not acelp_enabled)
+        self._chunk_ms = (
+            self._acelp_chunk_ms if acelp_enabled else self._raw_chunk_ms
+        )
+        self._sync_chunk_duration_controls()
+        self._rebuild_engine()
+
+    def _on_b_encoder_mode_changed(self, restart_each_chunk: bool) -> None:
+        self._b_encoder_mode = (
+            "restart_each_chunk" if restart_each_chunk else "one_stream"
+        )
+        self.b_encoder_value_label.setText(
+            "Restart per chunk" if restart_each_chunk else "One stream"
+        )
+
     def _pattern_changed(self) -> None:
         self._sync_occurrence_control()
         if self._mode == "pattern":
             self.interleave_timeline.set_settings(self._settings())
 
+    def _on_chunk_slider_changed(self, value: int) -> None:
+        duration = value * ACELP_FRAME_MS if self._stage == "acelp" else value
+        self._set_chunk_duration(duration)
+
+    def _on_chunk_input_changed(self, value: int) -> None:
+        duration = snap_acelp_chunk_ms(value) if self._stage == "acelp" else value
+        self._set_chunk_duration(duration)
+
     def _on_chunk_duration_changed(self, value: int) -> None:
+        """Compatibility entry point used by callers that provide milliseconds."""
+        self._on_chunk_input_changed(value)
+
+    def _set_chunk_duration(self, value: int) -> None:
         self.chunk_duration_slider.blockSignals(True)
         self.chunk_duration_input.blockSignals(True)
-        self.chunk_duration_slider.setValue(value)
+        slider_value = value // ACELP_FRAME_MS if self._stage == "acelp" else value
+        self.chunk_duration_slider.setValue(slider_value)
         self.chunk_duration_input.setValue(value)
         self.chunk_duration_slider.blockSignals(False)
         self.chunk_duration_input.blockSignals(False)
         self._chunk_ms = value
+        if self._stage == "acelp":
+            self._acelp_chunk_ms = value
+        else:
+            self._raw_chunk_ms = value
         self.preview_detail.setText(f"Each block = {value} ms")
         self._configuration_changed()
+
+    def _sync_chunk_duration_controls(self) -> None:
+        self.chunk_duration_slider.blockSignals(True)
+        self.chunk_duration_input.blockSignals(True)
+        if self._stage == "acelp":
+            self.chunk_duration_slider.setRange(
+                1, ACELP_MAX_CHUNK_MS // ACELP_FRAME_MS
+            )
+            self.chunk_duration_slider.setSingleStep(1)
+            self.chunk_duration_slider.setPageStep(4)
+            self.chunk_duration_slider.setTickInterval(10)
+            self.chunk_duration_slider.setValue(self._chunk_ms // ACELP_FRAME_MS)
+            self.chunk_duration_input.setRange(ACELP_FRAME_MS, ACELP_MAX_CHUNK_MS)
+            self.chunk_duration_input.setSingleStep(ACELP_FRAME_MS)
+        else:
+            self.chunk_duration_slider.setRange(MIN_CHUNK_MS, MAX_CHUNK_MS)
+            self.chunk_duration_slider.setSingleStep(10)
+            self.chunk_duration_slider.setPageStep(50)
+            self.chunk_duration_slider.setTickInterval(250)
+            self.chunk_duration_slider.setValue(self._chunk_ms)
+            self.chunk_duration_input.setRange(MIN_CHUNK_MS, MAX_CHUNK_MS)
+            self.chunk_duration_input.setSingleStep(1)
+        self.chunk_duration_input.setValue(self._chunk_ms)
+        self.chunk_duration_slider.blockSignals(False)
+        self.chunk_duration_input.blockSignals(False)
+        self.preview_detail.setText(f"Each block = {self._chunk_ms} ms")
 
     def _on_crossfade_duration_changed(self, value: int) -> None:
         self.crossfade_duration_slider.blockSignals(True)
@@ -1002,26 +1151,38 @@ class MainWindow(QMainWindow):
 
     def _rebuild_engine(self) -> None:
         try:
-            self._engine = (
-                AudioEngine(
-                    self._source_a,
-                    self._source_b,
-                    slot_ms=self._chunk_ms,
-                    smoothing_ms=self._crossfade_ms,
-                )
-                if self._source_a is not None and self._source_b is not None
-                else None
-            )
+            if self._source_a is not None and self._source_b is not None:
+                if self._stage == "acelp":
+                    self._engine = AcelpEngine(
+                        self._source_a,
+                        self._source_b,
+                        slot_ms=self._chunk_ms,
+                    )
+                else:
+                    self._engine = AudioEngine(
+                        self._source_a,
+                        self._source_b,
+                        slot_ms=self._chunk_ms,
+                        smoothing_ms=self._crossfade_ms,
+                    )
+            else:
+                self._engine = None
         except (AudioError, ValueError) as exc:
             self._engine = None
             QMessageBox.critical(self, "Could not prepare audio", str(exc))
 
         if self._engine is not None:
-            self.status_label.setText(
-                f"Ready • {self._chunk_ms} ms chunks • "
-                f"{self._crossfade_ms} ms crossfade • "
-                f"{_format_time(self._engine.duration)} output"
-            )
+            if self._stage == "acelp":
+                self.status_label.setText(
+                    f"Ready • ACELP • {self._chunk_ms} ms chunks • "
+                    f"{_format_time(self._engine.duration)} source-A output"
+                )
+            else:
+                self.status_label.setText(
+                    f"Ready • {self._chunk_ms} ms chunks • "
+                    f"{self._crossfade_ms} ms crossfade • "
+                    f"{_format_time(self._engine.duration)} output"
+                )
         else:
             self.status_label.setText("Load the other WAV file to begin.")
         self._sync_pattern_controls()
@@ -1147,14 +1308,36 @@ class MainWindow(QMainWindow):
         self._loop = checked
 
     def _toggle_playback(self) -> None:
-        if self._playback.is_playing:
-            self._stop_playback(reset=True)
+        if (
+            self._playback.is_playing
+            or self._rendered_playback.is_playing
+            or self._acelp_preparing
+        ):
+            self._stop_playback(wait=self._acelp_preparing, reset=True)
             return
         if self._engine is None:
             return
         self._stop_preview(wait=True)
         self.progress.setValue(0)
         self._update_time(0.0)
+        if self._stage == "acelp":
+            assert isinstance(self._engine, AcelpEngine)
+            self._acelp_prepare_cancel.clear()
+            self._acelp_preparing = True
+            self.play_button.setText("Stop")
+            self.status_label.setText("Preparing ACELP symbols and decoded audio…")
+            engine = self._engine
+            settings = self._settings()
+            b_encoder_mode = self._b_encoder_mode
+            self._acelp_prepare_thread = threading.Thread(
+                target=self._prepare_acelp_playback,
+                args=(engine, settings, b_encoder_mode),
+                name="acelp-playback-prepare",
+                daemon=True,
+            )
+            self._acelp_prepare_thread.start()
+            self._refresh_actions()
+            return
         if self._playback.start(self._engine, self._settings, lambda: self._loop):
             self.play_button.setText("Stop")
             self.status_label.setText(
@@ -1162,14 +1345,89 @@ class MainWindow(QMainWindow):
                 f"{self._chunk_ms} ms boundary"
             )
 
+    def _prepare_acelp_playback(
+        self,
+        engine: AcelpEngine,
+        settings: InterleaveSettings,
+        b_encoder_mode: BEncoderMode,
+    ) -> None:
+        try:
+            rendered = engine.render(
+                settings,
+                b_encoder_mode,
+                progress=lambda value: self._signals.export_progress.emit(
+                    round(value * 1000)
+                ),
+                cancel_event=self._acelp_prepare_cancel,
+            )
+            audio = LoadedAudio(rendered, engine.sample_rate)
+        except RenderingCancelled:
+            self._signals.acelp_prepare_cancelled.emit()
+        except Exception as exc:
+            self._signals.acelp_prepare_error.emit(str(exc))
+        else:
+            self._signals.acelp_ready.emit(audio)
+
+    def _on_acelp_ready(self, audio: LoadedAudio) -> None:
+        if (
+            self._acelp_prepare_thread is not None
+            and not self._acelp_prepare_thread.is_alive()
+        ):
+            self._acelp_prepare_thread = None
+        self._acelp_preparing = False
+        if self._acelp_prepare_cancel.is_set():
+            self._refresh_actions()
+            return
+        if self._rendered_playback.start(audio, lambda: self._loop):
+            self.status_label.setText("Playing fixed ACELP symbol-stage result")
+        else:
+            self.play_button.setText("Play")
+        self._refresh_actions()
+
+    def _on_acelp_prepare_error(self, message: str) -> None:
+        self._acelp_prepare_thread = None
+        self._acelp_preparing = False
+        self.play_button.setText("Play")
+        self.status_label.setText("ACELP preparation failed")
+        self._refresh_actions()
+        QMessageBox.critical(self, "ACELP preparation failed", message)
+
+    def _on_acelp_prepare_cancelled(self) -> None:
+        self._acelp_prepare_thread = None
+        self._acelp_preparing = False
+        self.play_button.setText("Play")
+        if self._engine is not None and not self._exporting:
+            self.status_label.setText("Ready")
+        self._refresh_actions()
+
     def _stop_playback(self, wait: bool = False, reset: bool = False) -> None:
+        self._acelp_prepare_cancel.set()
         self._playback.stop(wait=wait)
+        self._rendered_playback.stop(wait=wait)
+        if (
+            wait
+            and self._acelp_prepare_thread is not None
+            and self._acelp_prepare_thread is not threading.current_thread()
+        ):
+            self._acelp_prepare_thread.join(timeout=2.0)
+        if (
+            self._acelp_prepare_thread is not None
+            and not self._acelp_prepare_thread.is_alive()
+        ):
+            self._acelp_prepare_thread = None
+        self._acelp_preparing = (
+            self._acelp_prepare_thread is not None
+            and self._acelp_prepare_thread.is_alive()
+        )
         self.play_button.setText("Play")
         if reset:
             self.progress.setValue(0)
             self._update_time(0.0)
         if self._engine is not None and not self._exporting:
-            self.status_label.setText("Ready")
+            self.status_label.setText(
+                "Stopping ACELP preparation…" if self._acelp_preparing else "Ready"
+            )
+        self._refresh_actions()
 
     def _toggle_source_preview(self, source_id: SourceId) -> None:
         target = f"source-{source_id}"
@@ -1259,6 +1517,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Playback finished")
         else:
             self.status_label.setText("Ready")
+        self._refresh_actions()
 
     def _on_playback_error(self, message: str) -> None:
         QMessageBox.critical(self, "Audio output error", message)
@@ -1286,6 +1545,7 @@ class MainWindow(QMainWindow):
         self._stop_all_playback(wait=True, reset=True)
         engine = self._engine
         snapshot = self._settings()
+        b_encoder_mode = self._b_encoder_mode
         self._export_cancel.clear()
         self._exporting = True
         self.progress.setValue(0)
@@ -1296,22 +1556,99 @@ class MainWindow(QMainWindow):
 
         self._export_thread = threading.Thread(
             target=self._render_export,
-            args=(engine, snapshot, output_path),
+            args=(engine, snapshot, b_encoder_mode, output_path),
             name="audio-export",
             daemon=True,
         )
         self._export_thread.start()
 
     def _render_export(
-        self, engine: AudioEngine, settings: InterleaveSettings, output_path: Path
+        self,
+        engine: AudioEngine | AcelpEngine,
+        settings: InterleaveSettings,
+        b_encoder_mode: BEncoderMode,
+        output_path: Path,
     ) -> None:
         try:
-            rendered = engine.render(
+            if isinstance(engine, AcelpEngine):
+                rendered = engine.render(
+                    settings,
+                    b_encoder_mode,
+                    progress=lambda value: self._signals.export_progress.emit(
+                        round(value * 1000)
+                    ),
+                    cancel_event=self._export_cancel,
+                )
+            else:
+                rendered = engine.render(
+                    settings,
+                    progress=lambda value: self._signals.export_progress.emit(
+                        round(value * 1000)
+                    ),
+                    cancel_event=self._export_cancel,
+                )
+            write_wav(output_path, rendered, engine.sample_rate)
+        except RenderingCancelled:
+            return
+        except Exception as exc:
+            self._signals.export_error.emit(str(exc))
+        else:
+            self._signals.export_finished.emit(str(output_path))
+
+    def _export_symbols(self) -> None:
+        if (
+            not isinstance(self._engine, AcelpEngine)
+            or self._exporting
+            or self._acelp_preparing
+            or self._rendered_playback.is_playing
+        ):
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export interleaved ACELP symbols",
+            "interleaved.spe",
+            "ETSI ACELP symbols (*.spe)",
+        )
+        if not path:
+            return
+        output_path = Path(path)
+        if output_path.suffix.lower() != ".spe":
+            output_path = output_path.with_suffix(".spe")
+
+        self._stop_all_playback(wait=True, reset=True)
+        engine = self._engine
+        settings = self._settings()
+        b_encoder_mode = self._b_encoder_mode
+        self._export_cancel.clear()
+        self._exporting = True
+        self.progress.setValue(0)
+        self.status_label.setText("Exporting ACELP symbol stream…")
+        self._refresh_actions()
+        self._export_thread = threading.Thread(
+            target=self._render_symbol_export,
+            args=(engine, settings, b_encoder_mode, output_path),
+            name="acelp-symbol-export",
+            daemon=True,
+        )
+        self._export_thread.start()
+
+    def _render_symbol_export(
+        self,
+        engine: AcelpEngine,
+        settings: InterleaveSettings,
+        b_encoder_mode: BEncoderMode,
+        output_path: Path,
+    ) -> None:
+        try:
+            symbols = engine.render_symbols(
                 settings,
-                progress=lambda value: self._signals.export_progress.emit(round(value * 1000)),
+                b_encoder_mode,
+                progress=lambda value: self._signals.export_progress.emit(
+                    round(value * 1000)
+                ),
                 cancel_event=self._export_cancel,
             )
-            write_wav(output_path, rendered, engine.sample_rate)
+            symbols.write_spe(output_path)
         except RenderingCancelled:
             return
         except Exception as exc:
@@ -1339,21 +1676,45 @@ class MainWindow(QMainWindow):
 
     def _refresh_actions(self) -> None:
         ready = self._engine is not None and not self._exporting
-        self.play_button.setEnabled(ready)
-        self.export_button.setEnabled(ready)
-        self.source_a_card.load_button.setEnabled(not self._exporting)
-        self.source_b_card.load_button.setEnabled(not self._exporting)
+        acelp_busy = self._stage == "acelp" and (
+            self._acelp_preparing or self._rendered_playback.is_playing
+        )
+        self.configuration_panel.setEnabled(not acelp_busy and not self._exporting)
+        self.play_button.setEnabled(
+            ready
+            and not (
+                self._stage == "acelp"
+                and self._acelp_preparing
+                and self._acelp_prepare_cancel.is_set()
+            )
+        )
+        self.export_button.setEnabled(ready and not acelp_busy)
+        self.symbol_export_button.setEnabled(
+            ready and self._stage == "acelp" and not acelp_busy
+        )
+        self.source_a_card.load_button.setEnabled(
+            not self._exporting and not acelp_busy
+        )
+        self.source_b_card.load_button.setEnabled(
+            not self._exporting and not acelp_busy
+        )
         self.source_a_card.preview_button.setEnabled(
-            self._source_a is not None and not self._exporting
+            self._source_a is not None and not self._exporting and not acelp_busy
         )
         self.source_b_card.preview_button.setEnabled(
-            self._source_b is not None and not self._exporting
+            self._source_b is not None and not self._exporting and not acelp_busy
         )
-        self.region_preview_button.setEnabled(ready and self._mode == "region")
+        self.region_preview_button.setEnabled(
+            ready and self._mode == "region" and not acelp_busy
+        )
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._playback.stop(wait=True)
+        self._rendered_playback.stop(wait=True)
         self._preview_playback.stop(wait=True)
+        self._acelp_prepare_cancel.set()
+        if self._acelp_prepare_thread is not None:
+            self._acelp_prepare_thread.join(timeout=2.0)
         self._export_cancel.set()
         if self._export_thread is not None:
             self._export_thread.join(timeout=2.0)
