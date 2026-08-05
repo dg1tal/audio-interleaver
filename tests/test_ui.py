@@ -17,6 +17,7 @@ def test_window_starts_waiting_for_two_sources(qtbot):
     assert not window.export_button.isEnabled()
     assert window.crossfader.value() == 50
     assert window.chunk_duration_slider.value() == 360
+    assert window.crossfade_duration_slider.value() == 5
     assert not window.loop_checkbox.isChecked()
 
 
@@ -66,8 +67,11 @@ def test_duration_sliders_rebuild_engine_and_preview(qtbot):
     window._rebuild_engine()
 
     window.chunk_duration_slider.setValue(250)
+    window.crossfade_duration_slider.setValue(20)
 
     assert window._engine is not None
     assert window._engine.slot_ms == 250
+    assert window._engine.smoothing_ms == 20
     assert window._engine.slot_count == 4
     assert window.preview_detail.text() == "Each block = 250 ms"
+    assert window.crossfade_duration_label.text() == "20 ms"

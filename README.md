@@ -12,9 +12,12 @@ selection crossfader controls how many chunks come from each source:
 
 This is a chunk-selection crossfader, not a conventional volume mixer. Each
 source advances to its own next chunk whenever it is selected; the files are
-not aligned on a shared timeline and adjacent chunks are not crossfaded. When
-the sources have different lengths, the shorter source loops and the result
-ends with the longer source. Chunk duration is adjustable from 50 to 2000 ms.
+not aligned on a shared timeline. When a boundary switches sources, an
+equal-power transition crossfades the previous chunk's tail into the next
+chunk's beginning without changing chunk order or output duration. The
+crossfade is adjustable from 0 to 50 ms (5 ms by default). When the sources
+have different lengths, the shorter source loops and the result ends with the
+longer source. Chunk duration is adjustable from 50 to 2000 ms.
 
 ## Requirements
 
@@ -77,9 +80,9 @@ python -m pip install -e .
 audio-interleaver
 ```
 
-Load source A and source B, choose the chunk duration,
+Load source A and source B, choose the chunk and crossfade durations,
 move the selection crossfader, and press **Play**. Selection changes made during
-playback take effect when the next chunk starts. Changing the duration stops
+playback take effect when the next chunk starts. Changing either duration stops
 playback and rebuilds the timeline. Use the **Loop** checkbox to restart the
 complete result whenever playback reaches the end. Turn it off during playback
 to stop looping after the current pass. Use **Export WAV…** to render a complete
@@ -91,8 +94,8 @@ file using a snapshot of the current settings.
 python -m pytest
 ```
 
-The test suite covers deterministic selection, sequential source chunks, looping,
-partial final slots, format normalization, live slot
+The test suite covers deterministic selection, sequential source chunks,
+looping, partial final slots, format normalization, transition smoothing, live slot
 updates, WAV I/O, and a headless UI smoke test.
 
 The included GitHub Actions workflow runs this suite on macOS, Windows, and

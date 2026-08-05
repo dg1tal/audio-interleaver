@@ -34,7 +34,7 @@ def test_crossfader_is_sampled_before_each_playback_slot(monkeypatch):
     monkeypatch.setattr("audio_interleaver.playback.sd.OutputStream", FakeOutputStream)
     source_a = LoadedAudio(np.full((1080, 1), 0.1, dtype=np.float32), 1000)
     source_b = LoadedAudio(np.full((1080, 1), 0.9, dtype=np.float32), 1000)
-    engine = AudioEngine(source_a, source_b)
+    engine = AudioEngine(source_a, source_b, smoothing_ms=0)
     values = iter((0.0, 1.0, 0.0))
     finished = threading.Event()
     natural = []
@@ -62,7 +62,7 @@ def test_loop_replays_the_complete_result(monkeypatch):
     monkeypatch.setattr("audio_interleaver.playback.sd.OutputStream", FakeOutputStream)
     source_a = LoadedAudio(np.full((720, 1), 0.1, dtype=np.float32), 1000)
     source_b = LoadedAudio(np.full((720, 1), 0.9, dtype=np.float32), 1000)
-    engine = AudioEngine(source_a, source_b)
+    engine = AudioEngine(source_a, source_b, smoothing_ms=0)
     loop_values = iter((True, False))
     positions = []
     finished = threading.Event()

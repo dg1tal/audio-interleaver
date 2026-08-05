@@ -45,7 +45,7 @@ def test_crossfader_values_are_clamped():
 def test_center_uses_each_sources_sequential_chunks():
     source_a = audio(np.arange(1000, dtype=np.float32))
     source_b = audio(np.arange(1000, dtype=np.float32) + 2000)
-    engine = AudioEngine(source_a, source_b)
+    engine = AudioEngine(source_a, source_b, smoothing_ms=0)
 
     rendered = engine.render(0.5)[:, 0]
 
@@ -106,20 +106,26 @@ def test_sample_rates_and_channels_are_normalized():
     )
 
 
-def test_source_switch_is_a_hard_chunk_boundary():
-    engine = AudioEngine(audio(0.0), audio(1.0))
+def test_source_switch_has_equal_power_smoothing_without_changing_chunk_order():
+    source_a = audio(np.arange(1000, dtype=np.float32) / 2000)
+    source_b = audio(np.ones(1000, dtype=np.float32))
+    engine = AudioEngine(source_a, source_b, smoothing_ms=5)
 
-    first, _ = engine.render_slot(0, 0.5)
-    second, _ = engine.render_slot(1, 0.5)
+    first, previous = engine.render_slot(0, 0.5)
+    second, _ = engine.render_slot(1, 0.5, 0, previous, first)
 
     assert np.all(first == 1.0)
-    assert np.all(second == 0.0)
+    transition = second[:5, 0]
+    assert transition[0] == pytest.approx(1.0)
+    assert transition[-1] == pytest.approx(source_a.samples[4, 0], abs=1e-7)
+    np.testing.assert_allclose(second[5:], source_a.samples[5:360])
 
 
-def test_configurable_chunk_duration():
-    engine = AudioEngine(audio(0.0), audio(1.0), slot_ms=250)
+def test_configurable_chunk_and_crossfade_durations():
+    engine = AudioEngine(audio(0.0), audio(1.0), slot_ms=250, smoothing_ms=20)
 
     assert engine.slot_frames == 250
+    assert engine.smoothing_frames == 20
     assert engine.slot_count == 4
 
 

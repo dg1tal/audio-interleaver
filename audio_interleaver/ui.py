@@ -38,8 +38,10 @@ from .playback import PlaybackController
 SOURCE_A_COLOR = "#6ea8fe"
 SOURCE_B_COLOR = "#f08cba"
 DEFAULT_CHUNK_MS = 360
+DEFAULT_CROSSFADE_MS = 5
 MIN_CHUNK_MS = 50
 MAX_CHUNK_MS = 2000
+MAX_CROSSFADE_MS = 50
 
 
 def _format_time(seconds: float) -> str:
@@ -241,6 +243,7 @@ class MainWindow(QMainWindow):
         self._engine: AudioEngine | None = None
         self._crossfader = 0.5
         self._chunk_ms = DEFAULT_CHUNK_MS
+        self._crossfade_ms = DEFAULT_CROSSFADE_MS
         self._loop = False
         self._export_thread: threading.Thread | None = None
         self._export_cancel = threading.Event()
@@ -354,6 +357,33 @@ class MainWindow(QMainWindow):
             self._on_chunk_duration_changed
         )
         fader_layout.addWidget(self.chunk_duration_slider)
+
+        transition_header = QHBoxLayout()
+        transition_title = QLabel("CHUNK CROSSFADE")
+        transition_title.setObjectName("sectionTitle")
+        self.crossfade_duration_label = QLabel(f"{self._crossfade_ms} ms")
+        self.crossfade_duration_label.setObjectName("settingValue")
+        transition_header.addWidget(transition_title)
+        transition_header.addStretch()
+        transition_header.addWidget(self.crossfade_duration_label)
+        fader_layout.addLayout(transition_header)
+
+        self.crossfade_duration_slider = QSlider(Qt.Orientation.Horizontal)
+        self.crossfade_duration_slider.setRange(0, MAX_CROSSFADE_MS)
+        self.crossfade_duration_slider.setValue(self._crossfade_ms)
+        self.crossfade_duration_slider.setSingleStep(1)
+        self.crossfade_duration_slider.setPageStep(5)
+        self.crossfade_duration_slider.setTickPosition(
+            QSlider.TickPosition.TicksBelow
+        )
+        self.crossfade_duration_slider.setTickInterval(5)
+        self.crossfade_duration_slider.setToolTip(
+            "Equal-power transition when consecutive chunks switch sources"
+        )
+        self.crossfade_duration_slider.valueChanged.connect(
+            self._on_crossfade_duration_changed
+        )
+        fader_layout.addWidget(self.crossfade_duration_slider)
 
         preview_header = QHBoxLayout()
         preview_title = QLabel("INTERLEAVE PREVIEW")
@@ -482,6 +512,11 @@ class MainWindow(QMainWindow):
         self.preview_detail.setText(f"Each block = {value} ms")
         self._configuration_changed()
 
+    def _on_crossfade_duration_changed(self, value: int) -> None:
+        self._crossfade_ms = value
+        self.crossfade_duration_label.setText(f"{value} ms")
+        self._configuration_changed()
+
     def _configuration_changed(self) -> None:
         self._stop_playback(wait=True, reset=True)
         self._rebuild_engine()
@@ -493,6 +528,7 @@ class MainWindow(QMainWindow):
                     self._source_a,
                     self._source_b,
                     slot_ms=self._chunk_ms,
+                    smoothing_ms=self._crossfade_ms,
                 )
                 if self._source_a is not None and self._source_b is not None
                 else None
@@ -504,6 +540,7 @@ class MainWindow(QMainWindow):
         if self._engine is not None:
             self.status_label.setText(
                 f"Ready • {self._chunk_ms} ms chunks • "
+                f"{self._crossfade_ms} ms crossfade • "
                 f"{_format_time(self._engine.duration)} output"
             )
         else:

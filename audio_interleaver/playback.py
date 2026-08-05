@@ -92,15 +92,22 @@ class PlaybackController:
             stream.start()
             while not self._stop_event.is_set():
                 source_chunk_indices: dict[SourceId, int] = {"A": 0, "B": 0}
+                previous_source: SourceId | None = None
+                previous_chunk = None
                 for slot_index in range(engine.slot_count):
                     if self._stop_event.is_set():
                         break
                     position = crossfader()
                     source_id = engine.source_for_slot(slot_index, position)
-                    slot, _ = engine.render_slot(
-                        slot_index, position, source_chunk_indices[source_id]
+                    slot, previous_source = engine.render_slot(
+                        slot_index,
+                        position,
+                        source_chunk_indices[source_id],
+                        previous_source,
+                        previous_chunk,
                     )
                     source_chunk_indices[source_id] += 1
+                    previous_chunk = slot
                     stream.write(slot)
                     if self._stop_event.is_set():
                         break
