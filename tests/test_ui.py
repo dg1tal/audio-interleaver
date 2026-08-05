@@ -35,6 +35,17 @@ def test_window_starts_waiting_for_two_sources(qtbot):
     assert window.source_b_card.preview_button.text() == "Play preview"
     assert not window.source_a_card.preview_button.isEnabled()
     assert not window.source_b_card.preview_button.isEnabled()
+    assert window.first_alternate_title.text() == "FIRST B CHUNK POSITION"
+    assert window.burst_size_label.text() == "1 chunk"
+
+
+def test_source_card_stacks_load_above_preview_beside_file_details(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    for card in (window.source_a_card, window.source_b_card):
+        assert card.action_layout.itemAt(0).widget() is card.load_button
+        assert card.action_layout.itemAt(1).widget() is card.preview_button
 
 
 def test_loop_checkbox_updates_playback_mode(qtbot):
@@ -109,11 +120,24 @@ def test_pattern_controls_update_preview(qtbot):
     assert window.interleave_timeline.slot_sources == tuple("ABBABBABB")
 
     window.start_with_b_checkbox.setChecked(True)
-    assert window.first_alternate_title.text() == "FIRST A CHUNK"
+    assert window.first_alternate_title.text() == "FIRST A CHUNK POSITION"
     assert window.interleave_timeline.slot_sources == tuple("BABBABBAB")
 
     window.first_alternate_slider.setValue(4)
     assert window.interleave_timeline.slot_sources == tuple("BBBABBABB")
+
+
+def test_burst_size_label_pluralizes_chunks(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    source = LoadedAudio(np.zeros((3240, 1), dtype=np.float32), 1000)
+    window._source_a = source
+    window._source_b = source
+    window._rebuild_engine()
+
+    assert window.burst_size_label.text() == "1 chunk"
+    window.burst_size_slider.setValue(2)
+    assert window.burst_size_label.text() == "2 chunks"
 
 
 def test_occurrence_fill_has_one_meaningful_step_per_occurrence(qtbot):

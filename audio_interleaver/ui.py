@@ -65,6 +65,11 @@ def _format_time(seconds: float) -> str:
     return f"{minutes:d}:{remainder:02d}"
 
 
+def _format_chunk_count(count: int) -> str:
+    chunk_word = "chunk" if count == 1 else "chunks"
+    return f"{count} {chunk_word}"
+
+
 @lru_cache(maxsize=1)
 def _commit_hash() -> str:
     configured = os.environ.get("AUDIO_INTERLEAVER_COMMIT", "").strip()
@@ -122,13 +127,19 @@ class SourceCard(QFrame):
         layout.setContentsMargins(16, 10, 16, 10)
         layout.setSpacing(4)
         layout.addWidget(title)
-        file_row = QHBoxLayout()
-        file_row.setSpacing(10)
-        file_row.addWidget(self.file_label, 1)
-        file_row.addWidget(self.preview_button)
-        file_row.addWidget(self.load_button)
-        layout.addLayout(file_row)
-        layout.addWidget(self.details_label)
+        content_row = QHBoxLayout()
+        content_row.setSpacing(10)
+        file_details = QVBoxLayout()
+        file_details.setSpacing(4)
+        file_details.addWidget(self.file_label)
+        file_details.addWidget(self.details_label)
+        self.action_layout = QVBoxLayout()
+        self.action_layout.setSpacing(6)
+        self.action_layout.addWidget(self.load_button)
+        self.action_layout.addWidget(self.preview_button)
+        content_row.addLayout(file_details, 1)
+        content_row.addLayout(self.action_layout)
+        layout.addLayout(content_row)
 
     def display_audio(self, audio: LoadedAudio) -> None:
         self.file_label.setText(audio.path.name if audio.path else "Loaded WAV")
@@ -560,7 +571,7 @@ class MainWindow(QMainWindow):
         pattern_layout.addLayout(pattern_options)
 
         alternate_header = QHBoxLayout()
-        self.first_alternate_title = QLabel("FIRST B CHUNK")
+        self.first_alternate_title = QLabel("FIRST B CHUNK POSITION")
         self.first_alternate_title.setObjectName("sectionTitle")
         self.first_alternate_label = QLabel("Chunk 2")
         self.first_alternate_label.setObjectName("settingValue")
@@ -586,7 +597,7 @@ class MainWindow(QMainWindow):
         burst_header = QHBoxLayout()
         burst_title = QLabel("B CHUNKS PER OCCURRENCE")
         burst_title.setObjectName("sectionTitle")
-        self.burst_size_label = QLabel("1")
+        self.burst_size_label = QLabel("1 chunk")
         self.burst_size_label.setObjectName("settingValue")
         burst_header.addWidget(burst_title)
         burst_header.addStretch()
@@ -926,7 +937,9 @@ class MainWindow(QMainWindow):
     def _on_start_source_changed(self, starts_with_b: bool) -> None:
         self._starts_with = "B" if starts_with_b else "A"
         alternate = "A" if starts_with_b else "B"
-        self.first_alternate_title.setText(f"FIRST {alternate} CHUNK")
+        self.first_alternate_title.setText(
+            f"FIRST {alternate} CHUNK POSITION"
+        )
         self._pattern_changed()
 
     def _on_first_alternate_changed(self, chunk_number: int) -> None:
@@ -936,7 +949,7 @@ class MainWindow(QMainWindow):
 
     def _on_burst_size_changed(self, chunks: int) -> None:
         self._b_chunks_per_occurrence = chunks
-        self.burst_size_label.setText(str(chunks))
+        self.burst_size_label.setText(_format_chunk_count(chunks))
         self._pattern_changed()
 
     def _pattern(self) -> InterleavePattern:
@@ -1049,7 +1062,9 @@ class MainWindow(QMainWindow):
             if has_alternate_slot
             else "Unavailable"
         )
-        self.burst_size_label.setText(str(self._b_chunks_per_occurrence))
+        self.burst_size_label.setText(
+            _format_chunk_count(self._b_chunks_per_occurrence)
+        )
         self.first_alternate_slider.blockSignals(False)
         self.burst_size_slider.blockSignals(False)
         self._sync_occurrence_control()
@@ -1121,9 +1136,8 @@ class MainWindow(QMainWindow):
         self.region_source_label.setText(
             f"Chunk {self._region_b_source_slot + 1}"
         )
-        chunk_word = "chunk" if self._region_length_slots == 1 else "chunks"
         self.region_length_label.setText(
-            f"{self._region_length_slots} {chunk_word}"
+            _format_chunk_count(self._region_length_slots)
         )
         self.region_output_label.setText(f"Chunk {self._region_output_slot + 1}")
         for control in controls:
