@@ -62,6 +62,11 @@ def test_increasing_fill_never_moves_or_removes_an_active_b_slot():
         previous_b_slots = current_b_slots
 
 
+def test_moving_first_b_right_keeps_filled_occurrences_until_they_stop_fitting():
+    pattern = InterleavePattern(fill=0.5, first_alternate_slot=7)
+    assert sources(pattern, 12) == "AAAAAAABABAB"
+
+
 @pytest.mark.parametrize(
     ("burst", "expected"),
     [(1, "ABABABABA"), (2, "ABBABBABB"), (3, "ABBBABBBA")],
@@ -99,7 +104,8 @@ def test_center_uses_each_sources_sequential_chunks():
 
     np.testing.assert_allclose(rendered[:360], source_a.samples[:360, 0])
     np.testing.assert_allclose(rendered[360:720], source_b.samples[:360, 0])
-    np.testing.assert_allclose(rendered[720:], source_a.samples[360:640, 0])
+    np.testing.assert_allclose(rendered[720:1000], source_a.samples[360:640, 0])
+    np.testing.assert_allclose(rendered[1000:], 0.0)
 
 
 def test_zero_fill_selects_only_source_a():
@@ -107,7 +113,9 @@ def test_zero_fill_selects_only_source_a():
     source_b = audio(np.full(900, 0.75))
     engine = AudioEngine(source_a, source_b)
 
-    np.testing.assert_allclose(engine.render(InterleavePattern(fill=0.0)), -0.25)
+    rendered = engine.render(InterleavePattern(fill=0.0))[:, 0]
+    np.testing.assert_allclose(rendered[:900], -0.25)
+    np.testing.assert_allclose(rendered[900:], 0.0)
 
 
 def test_shorter_source_loops_until_longer_source_ends():
@@ -117,22 +125,30 @@ def test_shorter_source_loops_until_longer_source_ends():
 
     rendered = engine.render(InterleavePattern(fill=0.0))[:, 0]
 
-    assert len(rendered) == 1200
+    assert len(rendered) == 1440
     np.testing.assert_allclose(rendered[:500], source_a.samples[:, 0])
     np.testing.assert_allclose(rendered[500:1000], source_a.samples[:, 0])
-    np.testing.assert_allclose(rendered[1000:], source_a.samples[:200, 0])
+    np.testing.assert_allclose(rendered[1000:1200], source_a.samples[:200, 0])
+    np.testing.assert_allclose(rendered[1200:], 0.0)
 
 
-def test_final_partial_slot_is_preserved():
+def test_final_partial_slot_is_preserved_and_padded_with_silence():
+    source_a = audio(np.full(850, 0.25, dtype=np.float32))
     engine = AudioEngine(
-        audio(np.zeros(850, dtype=np.float32)),
+        source_a,
         audio(np.ones(800, dtype=np.float32)),
+        smoothing_ms=0,
     )
 
     assert engine.slot_count == 3
-    pattern = InterleavePattern(fill=1.0)
-    assert len(engine.render_slot(2, pattern)[0]) == 130
-    assert len(engine.render(pattern)) == 850
+    assert engine.content_frames == 850
+    assert engine.total_frames == 1080
+    pattern = InterleavePattern(fill=0.0)
+    final_slot = engine.render_slot(2, pattern)[0]
+    assert len(final_slot) == 360
+    np.testing.assert_allclose(final_slot[:130], 0.25)
+    np.testing.assert_allclose(final_slot[130:], 0.0)
+    assert len(engine.render(pattern)) == 1080
 
 
 def test_sample_rates_and_channels_are_normalized():

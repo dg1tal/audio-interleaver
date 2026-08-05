@@ -15,9 +15,11 @@ Each source advances to its own next chunk whenever it is selected; the files
 are not aligned on a shared timeline. When a boundary switches sources, an
 equal-power transition crossfades the previous chunk's tail into the next
 chunk's beginning without changing chunk order or output duration. The
-crossfade is adjustable from 0 to 50 ms (5 ms by default). When the sources
-have different lengths, the shorter source loops and the result ends with the
-longer source. Chunk duration is adjustable from 50 to 2000 ms.
+crossfade is adjustable from 0 to 50 ms and defaults to 0 ms. When the sources
+have different lengths, the shorter source loops and the timeline covers the
+longer source. A partial final output chunk is retained and padded with silence.
+Chunk duration is adjustable from 50 to 2000 ms. Both duration controls support
+exact numerical entry as well as slider adjustment.
 
 ## Requirements
 

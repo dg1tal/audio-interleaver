@@ -136,7 +136,11 @@ def select_source(
     if first_b >= slot_count or slot_index < first_b:
         return "A"
 
-    occurrence_count = math.ceil((slot_count - first_b) / cycle_length)
+    reference_first_b = 1 if pattern.starts_with == "A" else 2
+    occurrence_count = max(
+        0,
+        math.ceil((slot_count - reference_first_b) / cycle_length),
+    )
     fill = float(np.clip(pattern.fill, 0.0, 1.0))
     active_occurrences = min(
         occurrence_count,
@@ -171,7 +175,7 @@ class AudioEngine:
     source_a: LoadedAudio
     source_b: LoadedAudio
     slot_ms: float = 360.0
-    smoothing_ms: float = 5.0
+    smoothing_ms: float = 0.0
 
     def __post_init__(self) -> None:
         if self.slot_ms <= 0:
@@ -199,8 +203,12 @@ class AudioEngine:
         return self.source_a.channels
 
     @property
-    def total_frames(self) -> int:
+    def content_frames(self) -> int:
         return max(self.source_a.frames, self.source_b.frames)
+
+    @property
+    def total_frames(self) -> int:
+        return self.slot_count * self.slot_frames
 
     @property
     def duration(self) -> float:
@@ -216,7 +224,7 @@ class AudioEngine:
 
     @property
     def slot_count(self) -> int:
-        return math.ceil(self.total_frames / self.slot_frames)
+        return math.ceil(self.content_frames / self.slot_frames)
 
     def source_for_slot(
         self, slot_index: int, pattern: InterleavePattern
@@ -263,6 +271,9 @@ class AudioEngine:
         if source_chunk_index < 0:
             raise ValueError("source_chunk_index must be non-negative")
         result = self._chunk(source_id, source_chunk_index, length)
+        content_end = min(length, max(0, self.content_frames - start))
+        if content_end < length:
+            result[content_end:] = 0.0
 
         fade_length = min(
             self.smoothing_frames,

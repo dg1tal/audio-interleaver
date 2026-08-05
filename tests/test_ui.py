@@ -20,7 +20,9 @@ def test_window_starts_waiting_for_two_sources(qtbot):
     assert window.first_alternate_slider.value() == 2
     assert window.burst_size_slider.value() == 1
     assert window.chunk_duration_slider.value() == 360
-    assert window.crossfade_duration_slider.value() == 5
+    assert window.chunk_duration_input.value() == 360
+    assert window.crossfade_duration_slider.value() == 0
+    assert window.crossfade_duration_input.value() == 0
     assert not window.loop_checkbox.isChecked()
 
 
@@ -81,7 +83,7 @@ def test_pattern_controls_update_preview(qtbot):
     assert window.interleave_timeline.slot_sources == tuple("BBBABBABB")
 
 
-def test_duration_sliders_rebuild_engine_and_preview(qtbot):
+def test_duration_sliders_and_numeric_inputs_stay_synchronized(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
     source = LoadedAudio(np.zeros((1000, 1), dtype=np.float32), 1000)
@@ -89,14 +91,20 @@ def test_duration_sliders_rebuild_engine_and_preview(qtbot):
     window._source_b = source
     window._rebuild_engine()
 
-    window.chunk_duration_slider.setValue(250)
+    window.chunk_duration_input.setValue(250)
     window.crossfade_duration_slider.setValue(20)
 
     assert window._engine is not None
     assert window._engine.slot_ms == 250
     assert window._engine.smoothing_ms == 20
     assert window._engine.slot_count == 4
+    assert window.chunk_duration_slider.value() == 250
+    assert window.crossfade_duration_input.value() == 20
     assert window.first_alternate_slider.maximum() == 4
     assert window.burst_size_slider.maximum() == 4
     assert window.preview_detail.text() == "Each block = 250 ms"
-    assert window.crossfade_duration_label.text() == "20 ms"
+
+    window.crossfade_duration_input.setValue(7)
+    window.chunk_duration_slider.setValue(300)
+    assert window.crossfade_duration_slider.value() == 7
+    assert window.chunk_duration_input.value() == 300

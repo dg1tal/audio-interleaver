@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSlider,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -40,7 +41,7 @@ from .playback import PlaybackController
 SOURCE_A_COLOR = "#6ea8fe"
 SOURCE_B_COLOR = "#f08cba"
 DEFAULT_CHUNK_MS = 360
-DEFAULT_CROSSFADE_MS = 5
+DEFAULT_CROSSFADE_MS = 0
 MIN_CHUNK_MS = 50
 MAX_CHUNK_MS = 2000
 MAX_CROSSFADE_MS = 50
@@ -277,8 +278,8 @@ class MainWindow(QMainWindow):
         central.setObjectName("central")
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setContentsMargins(32, 28, 32, 28)
-        root.setSpacing(20)
+        root.setContentsMargins(32, 20, 32, 20)
+        root.setSpacing(14)
 
         heading = QLabel("Audio Interleaver")
         heading.setObjectName("heading")
@@ -310,7 +311,7 @@ class MainWindow(QMainWindow):
         fader_panel.setObjectName("faderPanel")
         fader_layout = QVBoxLayout(fader_panel)
         fader_layout.setContentsMargins(22, 18, 22, 18)
-        fader_layout.setSpacing(8)
+        fader_layout.setSpacing(6)
 
         fader_header = QHBoxLayout()
         fader_title = QLabel("B OCCURRENCE FILL")
@@ -398,11 +399,18 @@ class MainWindow(QMainWindow):
         chunk_header = QHBoxLayout()
         chunk_title = QLabel("CHUNK DURATION")
         chunk_title.setObjectName("sectionTitle")
-        self.chunk_duration_label = QLabel(f"{self._chunk_ms} ms")
-        self.chunk_duration_label.setObjectName("settingValue")
+        self.chunk_duration_input = QSpinBox()
+        self.chunk_duration_input.setRange(MIN_CHUNK_MS, MAX_CHUNK_MS)
+        self.chunk_duration_input.setValue(self._chunk_ms)
+        self.chunk_duration_input.setSuffix(" ms")
+        self.chunk_duration_input.setKeyboardTracking(False)
+        self.chunk_duration_input.setObjectName("durationInput")
+        self.chunk_duration_input.valueChanged.connect(
+            self._on_chunk_duration_changed
+        )
         chunk_header.addWidget(chunk_title)
         chunk_header.addStretch()
-        chunk_header.addWidget(self.chunk_duration_label)
+        chunk_header.addWidget(self.chunk_duration_input)
         fader_layout.addSpacing(8)
         fader_layout.addLayout(chunk_header)
 
@@ -421,11 +429,18 @@ class MainWindow(QMainWindow):
         transition_header = QHBoxLayout()
         transition_title = QLabel("CHUNK CROSSFADE")
         transition_title.setObjectName("sectionTitle")
-        self.crossfade_duration_label = QLabel(f"{self._crossfade_ms} ms")
-        self.crossfade_duration_label.setObjectName("settingValue")
+        self.crossfade_duration_input = QSpinBox()
+        self.crossfade_duration_input.setRange(0, MAX_CROSSFADE_MS)
+        self.crossfade_duration_input.setValue(self._crossfade_ms)
+        self.crossfade_duration_input.setSuffix(" ms")
+        self.crossfade_duration_input.setKeyboardTracking(False)
+        self.crossfade_duration_input.setObjectName("durationInput")
+        self.crossfade_duration_input.valueChanged.connect(
+            self._on_crossfade_duration_changed
+        )
         transition_header.addWidget(transition_title)
         transition_header.addStretch()
-        transition_header.addWidget(self.crossfade_duration_label)
+        transition_header.addWidget(self.crossfade_duration_input)
         fader_layout.addLayout(transition_header)
 
         self.crossfade_duration_slider = QSlider(Qt.Orientation.Horizontal)
@@ -512,6 +527,10 @@ class MainWindow(QMainWindow):
             QLabel#fileName { font-size: 16px; font-weight: 600; }
             QLabel#sourceDetails, QLabel#status { color: #9ca3b2; }
             QLabel#mixLabel, QLabel#settingValue { color: #c4c8d2; font-weight: 600; }
+            QSpinBox#durationInput {
+                color: #c4c8d2; background: #303541; border: 1px solid #434956;
+                border-radius: 4px; padding: 3px 6px; font-weight: 600;
+            }
             QLabel#previewDetail { color: #858c9b; font-size: 11px; }
             QLabel#timeLabel { color: #b8bdc9; }
             QPushButton {
@@ -594,14 +613,24 @@ class MainWindow(QMainWindow):
         self.interleave_timeline.set_pattern(self._pattern())
 
     def _on_chunk_duration_changed(self, value: int) -> None:
+        self.chunk_duration_slider.blockSignals(True)
+        self.chunk_duration_input.blockSignals(True)
+        self.chunk_duration_slider.setValue(value)
+        self.chunk_duration_input.setValue(value)
+        self.chunk_duration_slider.blockSignals(False)
+        self.chunk_duration_input.blockSignals(False)
         self._chunk_ms = value
-        self.chunk_duration_label.setText(f"{value} ms")
         self.preview_detail.setText(f"Each block = {value} ms")
         self._configuration_changed()
 
     def _on_crossfade_duration_changed(self, value: int) -> None:
+        self.crossfade_duration_slider.blockSignals(True)
+        self.crossfade_duration_input.blockSignals(True)
+        self.crossfade_duration_slider.setValue(value)
+        self.crossfade_duration_input.setValue(value)
+        self.crossfade_duration_slider.blockSignals(False)
+        self.crossfade_duration_input.blockSignals(False)
         self._crossfade_ms = value
-        self.crossfade_duration_label.setText(f"{value} ms")
         self._configuration_changed()
 
     def _configuration_changed(self) -> None:
