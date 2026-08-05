@@ -6,8 +6,8 @@ import sys
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QCloseEvent, QFont
+from PySide6.QtCore import QObject, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QCloseEvent, QFont, QPaintEvent, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -33,6 +33,10 @@ from .audio import (
     write_wav,
 )
 from .playback import PlaybackController
+
+
+SOURCE_A_COLOR = "#6ea8fe"
+SOURCE_B_COLOR = "#f08cba"
 
 
 def _format_time(seconds: float) -> str:
@@ -89,12 +93,145 @@ class SourceCard(QFrame):
         )
 
 
+class InterleaveTimeline(QWidget):
+    """Two-lane preview of the source selected for every timeline slot."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._engine: AudioEngine | None = None
+        self._crossfader = 0.5
+        self._position = 0.0
+        self._slot_sources: tuple[str, ...] = ()
+        self.setMinimumHeight(58)
+        self.setSizePolicy(
+            self.sizePolicy().horizontalPolicy(),
+            self.sizePolicy().Policy.Fixed,
+        )
+        self.setAccessibleName("Interleave preview")
+        self.setAccessibleDescription(
+            "Two timeline lanes showing which 360 millisecond slots use source A or B."
+        )
+
+    @property
+    def slot_sources(self) -> tuple[str, ...]:
+        return self._slot_sources
+
+    @property
+    def position(self) -> float:
+        return self._position
+
+    def sizeHint(self) -> QSize:
+        return QSize(640, 58)
+
+    def set_engine(self, engine: AudioEngine | None) -> None:
+        self._engine = engine
+        self._position = 0.0
+        self._rebuild_slots()
+
+    def set_crossfader(self, crossfader: float) -> None:
+        self._crossfader = max(0.0, min(1.0, crossfader))
+        self._rebuild_slots()
+
+    def set_position(self, seconds: float) -> None:
+        self._position = max(0.0, seconds)
+        self.update()
+
+    def _rebuild_slots(self) -> None:
+        if self._engine is None:
+            self._slot_sources = ()
+        else:
+            self._slot_sources = tuple(
+                self._engine.source_for_slot(index, self._crossfader)
+                for index in range(self._engine.slot_count)
+            )
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+
+        label_width = 22.0
+        right_margin = 1.0
+        track_left = label_width
+        track_width = max(1.0, self.width() - track_left - right_margin)
+        lane_height = 19.0
+        lane_gap = 6.0
+        top = 5.0
+        track_color = QColor("#30343d")
+        border_color = QColor("#434956")
+
+        painter.setFont(self.font())
+        painter.setPen(QColor(SOURCE_A_COLOR))
+        painter.drawText(
+            QRectF(0, top, label_width - 5, lane_height),
+            Qt.AlignmentFlag.AlignCenter,
+            "A",
+        )
+        painter.setPen(QColor(SOURCE_B_COLOR))
+        painter.drawText(
+            QRectF(0, top + lane_height + lane_gap, label_width - 5, lane_height),
+            Qt.AlignmentFlag.AlignCenter,
+            "B",
+        )
+
+        lane_a = QRectF(track_left, top, track_width, lane_height)
+        lane_b = QRectF(
+            track_left, top + lane_height + lane_gap, track_width, lane_height
+        )
+        painter.fillRect(lane_a, track_color)
+        painter.fillRect(lane_b, track_color)
+
+        if self._engine is not None and self._slot_sources:
+            total_frames = self._engine.total_frames
+            slot_frames = self._engine.slot_frames
+            for index, source_id in enumerate(self._slot_sources):
+                start_frame = index * slot_frames
+                end_frame = min(start_frame + slot_frames, total_frames)
+                x1 = track_left + track_width * start_frame / total_frames
+                x2 = track_left + track_width * end_frame / total_frames
+                slot_rect = QRectF(
+                    x1,
+                    lane_a.top() if source_id == "A" else lane_b.top(),
+                    max(1.0, x2 - x1),
+                    lane_height,
+                )
+                painter.fillRect(
+                    slot_rect,
+                    QColor(SOURCE_A_COLOR if source_id == "A" else SOURCE_B_COLOR),
+                )
+                if x2 - x1 >= 4.0:
+                    painter.setPen(QColor("#20232b"))
+                    painter.drawLine(
+                        round(x2),
+                        round(slot_rect.top()),
+                        round(x2),
+                        round(slot_rect.bottom()),
+                    )
+
+            if self._engine.duration > 0:
+                progress = min(1.0, self._position / self._engine.duration)
+                marker_x = track_left + track_width * progress
+                painter.setPen(QPen(QColor("#f4f6fa"), 2))
+                painter.drawLine(
+                    round(marker_x),
+                    round(lane_a.top() - 2),
+                    round(marker_x),
+                    round(lane_b.bottom() + 2),
+                )
+
+        painter.setPen(QPen(border_color, 1))
+        painter.drawRect(lane_a)
+        painter.drawRect(lane_b)
+        painter.end()
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Audio Interleaver")
-        self.setMinimumSize(760, 590)
-        self.resize(860, 650)
+        self.setMinimumSize(760, 650)
+        self.resize(860, 720)
 
         self._source_a: LoadedAudio | None = None
         self._source_b: LoadedAudio | None = None
@@ -142,8 +279,8 @@ class MainWindow(QMainWindow):
 
         cards = QHBoxLayout()
         cards.setSpacing(14)
-        self.source_a_card = SourceCard("A", "#6ea8fe")
-        self.source_b_card = SourceCard("B", "#f08cba")
+        self.source_a_card = SourceCard("A", SOURCE_A_COLOR)
+        self.source_b_card = SourceCard("B", SOURCE_B_COLOR)
         self.source_a_card.load_requested.connect(lambda: self._load_source("A"))
         self.source_b_card.load_requested.connect(lambda: self._load_source("B"))
         cards.addWidget(self.source_a_card)
@@ -183,6 +320,20 @@ class MainWindow(QMainWindow):
         right_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         fader_labels.addWidget(right_label)
         fader_layout.addLayout(fader_labels)
+
+        preview_header = QHBoxLayout()
+        preview_title = QLabel("INTERLEAVE PREVIEW")
+        preview_title.setObjectName("sectionTitle")
+        preview_detail = QLabel("Each block = 360 ms")
+        preview_detail.setObjectName("previewDetail")
+        preview_header.addWidget(preview_title)
+        preview_header.addStretch()
+        preview_header.addWidget(preview_detail)
+        fader_layout.addSpacing(8)
+        fader_layout.addLayout(preview_header)
+
+        self.interleave_timeline = InterleaveTimeline()
+        fader_layout.addWidget(self.interleave_timeline)
         root.addWidget(fader_panel)
 
         transport = QFrame()
@@ -236,6 +387,7 @@ class MainWindow(QMainWindow):
             QLabel#fileName { font-size: 16px; font-weight: 600; }
             QLabel#sourceDetails, QLabel#status { color: #9ca3b2; }
             QLabel#mixLabel { color: #c4c8d2; font-weight: 600; }
+            QLabel#previewDetail { color: #858c9b; font-size: 11px; }
             QLabel#timeLabel { color: #b8bdc9; }
             QPushButton {
                 background: #303541; border: 1px solid #434956; border-radius: 6px;
@@ -298,12 +450,14 @@ class MainWindow(QMainWindow):
             )
         else:
             self.status_label.setText("Load the other WAV file to begin.")
+        self.interleave_timeline.set_engine(self._engine)
         self._update_time(0.0)
         self._refresh_actions()
 
     def _on_crossfader_changed(self, value: int) -> None:
         self._crossfader = value / 100.0
         self.mix_label.setText(f"A {100 - value}%  •  B {value}%")
+        self.interleave_timeline.set_crossfader(self._crossfader)
 
     def _on_loop_changed(self, checked: bool) -> None:
         self._loop = checked
@@ -355,6 +509,7 @@ class MainWindow(QMainWindow):
 
     def _update_time(self, current: float) -> None:
         duration = self._engine.duration if self._engine is not None else 0.0
+        self.interleave_timeline.set_position(current)
         self.time_label.setText(f"{_format_time(current)} / {_format_time(duration)}")
 
     def _export_wav(self) -> None:
