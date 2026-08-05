@@ -15,7 +15,9 @@ def test_window_starts_waiting_for_two_sources(qtbot):
     )
     assert not window.play_button.isEnabled()
     assert not window.export_button.isEnabled()
-    assert window.crossfader.value() == 50
+    assert window.crossfader.value() == 0
+    assert not window.crossfader.isEnabled()
+    assert window.revision_label.text().startswith("Commit ")
     assert not window.start_with_b_checkbox.isChecked()
     assert window.first_alternate_slider.value() == 2
     assert window.burst_size_slider.value() == 1
@@ -42,6 +44,7 @@ def test_interleave_timeline_tracks_slot_selection_and_position(qtbot):
     qtbot.addWidget(timeline)
 
     timeline.set_engine(engine)
+    assert timeline.minimumHeight() == 116
     assert timeline.slot_sources == ("A", "B", "A", "A")
 
     timeline.set_pattern(InterleavePattern(fill=1.0, b_chunks_per_occurrence=2))
@@ -81,6 +84,26 @@ def test_pattern_controls_update_preview(qtbot):
 
     window.first_alternate_slider.setValue(4)
     assert window.interleave_timeline.slot_sources == tuple("BBBABBABB")
+
+
+def test_occurrence_fill_has_one_meaningful_step_per_occurrence(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    source = LoadedAudio(np.zeros((4320, 1), dtype=np.float32), 1000)
+    window._source_a = source
+    window._source_b = source
+    window._rebuild_engine()
+
+    window.burst_size_slider.setValue(2)
+    assert window.crossfader.minimum() == 0
+    assert window.crossfader.maximum() == 4
+    patterns = []
+    for occurrence_count in range(5):
+        window.crossfader.setValue(occurrence_count)
+        patterns.append(window.interleave_timeline.slot_sources)
+
+    assert len(set(patterns)) == 5
+    assert window.mix_label.text() == "4 / 4 occurrences"
 
 
 def test_duration_sliders_and_numeric_inputs_stay_synchronized(qtbot):

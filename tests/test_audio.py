@@ -10,6 +10,7 @@ from audio_interleaver.audio import (
     InterleavePattern,
     LoadedAudio,
     load_wav,
+    occurrence_capacity,
     select_source,
     write_wav,
 )
@@ -47,6 +48,11 @@ def test_occurrences_are_revealed_from_left_to_right(fill, expected):
 def test_fill_values_are_clamped():
     assert sources(InterleavePattern(fill=-2)) == "AAAAAAAA"
     assert sources(InterleavePattern(fill=4)) == "ABABABAB"
+
+
+def test_occurrence_capacity_matches_meaningful_fill_steps():
+    assert occurrence_capacity(12, InterleavePattern(b_chunks_per_occurrence=1)) == 6
+    assert occurrence_capacity(12, InterleavePattern(b_chunks_per_occurrence=2)) == 4
 
 
 def test_increasing_fill_never_moves_or_removes_an_active_b_slot():

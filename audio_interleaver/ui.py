@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+import math
+import os
+import subprocess
 import sys
 import threading
 from pathlib import Path
 
+import numpy as np
 from PySide6.QtCore import QObject, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QCloseEvent, QFont, QPaintEvent, QPainter, QPen
 from PySide6.QtWidgets import (
@@ -33,6 +38,7 @@ from .audio import (
     RenderingCancelled,
     SourceId,
     load_wav,
+    occurrence_capacity,
     write_wav,
 )
 from .playback import PlaybackController
@@ -54,6 +60,25 @@ def _format_time(seconds: float) -> str:
     if hours:
         return f"{hours:d}:{minutes:02d}:{remainder:02d}"
     return f"{minutes:d}:{remainder:02d}"
+
+
+@lru_cache(maxsize=1)
+def _commit_hash() -> str:
+    configured = os.environ.get("AUDIO_INTERLEAVER_COMMIT", "").strip()
+    if configured:
+        return configured[:12]
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short=8", "HEAD"],
+            cwd=Path(__file__).resolve().parent,
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=1.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unavailable"
+    return result.stdout.strip() or "unavailable"
 
 
 class _UiSignals(QObject):
@@ -85,13 +110,15 @@ class SourceCard(QFrame):
         self.load_button.clicked.connect(self.load_requested)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(8)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(4)
         layout.addWidget(title)
-        layout.addWidget(self.file_label)
+        file_row = QHBoxLayout()
+        file_row.setSpacing(10)
+        file_row.addWidget(self.file_label, 1)
+        file_row.addWidget(self.load_button)
+        layout.addLayout(file_row)
         layout.addWidget(self.details_label)
-        layout.addSpacing(5)
-        layout.addWidget(self.load_button, alignment=Qt.AlignmentFlag.AlignLeft)
 
     def display_audio(self, audio: LoadedAudio) -> None:
         self.file_label.setText(audio.path.name if audio.path else "Loaded WAV")
@@ -102,7 +129,7 @@ class SourceCard(QFrame):
 
 
 class InterleaveTimeline(QWidget):
-    """Two-lane preview of the source selected for every timeline slot."""
+    """Chunk-aligned source waveforms and two-lane interleave preview."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -110,14 +137,14 @@ class InterleaveTimeline(QWidget):
         self._pattern = InterleavePattern()
         self._position = 0.0
         self._slot_sources: tuple[str, ...] = ()
-        self.setMinimumHeight(58)
+        self.setMinimumHeight(116)
         self.setSizePolicy(
             self.sizePolicy().horizontalPolicy(),
             self.sizePolicy().Policy.Fixed,
         )
         self.setAccessibleName("Interleave preview")
         self.setAccessibleDescription(
-            "Two timeline lanes showing which audio chunks use source A or B."
+            "Source waveforms surrounding timeline lanes for selected A and B chunks."
         )
 
     @property
@@ -129,7 +156,7 @@ class InterleaveTimeline(QWidget):
         return self._position
 
     def sizeHint(self) -> QSize:
-        return QSize(640, 58)
+        return QSize(640, 116)
 
     def set_engine(self, engine: AudioEngine | None) -> None:
         self._engine = engine
@@ -154,6 +181,35 @@ class InterleaveTimeline(QWidget):
             )
         self.update()
 
+    @staticmethod
+    def _draw_waveform(
+        painter: QPainter,
+        rect: QRectF,
+        samples: np.ndarray,
+        peak: float,
+        color: QColor,
+    ) -> None:
+        width = max(1, round(rect.width()))
+        frame_count = len(samples)
+        if frame_count == 0:
+            return
+        center = rect.center().y()
+        half_height = max(1.0, rect.height() / 2.0 - 2.0)
+        painter.setPen(QPen(color, 1))
+        for pixel in range(width):
+            frame_start = pixel * frame_count // width
+            frame_end = max(frame_start + 1, (pixel + 1) * frame_count // width)
+            section = samples[frame_start:frame_end]
+            low = float(np.min(section)) / peak
+            high = float(np.max(section)) / peak
+            x = round(rect.left()) + pixel
+            painter.drawLine(
+                x,
+                round(center - np.clip(high, -1.0, 1.0) * half_height),
+                x,
+                round(center - np.clip(low, -1.0, 1.0) * half_height),
+            )
+
     def paintEvent(self, event: QPaintEvent) -> None:
         del event
         painter = QPainter(self)
@@ -163,41 +219,91 @@ class InterleaveTimeline(QWidget):
         right_margin = 1.0
         track_left = label_width
         track_width = max(1.0, self.width() - track_left - right_margin)
-        lane_height = 19.0
-        lane_gap = 6.0
-        top = 5.0
+        waveform_height = 30.0
+        lane_height = 16.0
+        lane_gap = 4.0
+        section_gap = 5.0
+        top = 3.0
         track_color = QColor("#30343d")
         border_color = QColor("#434956")
+        muted_waveform = QColor("#59606d")
+
+        waveform_a = QRectF(track_left, top, track_width, waveform_height)
+        lane_a = QRectF(
+            track_left,
+            waveform_a.bottom() + section_gap,
+            track_width,
+            lane_height,
+        )
+        lane_b = QRectF(
+            track_left,
+            lane_a.bottom() + lane_gap,
+            track_width,
+            lane_height,
+        )
+        waveform_b = QRectF(
+            track_left,
+            lane_b.bottom() + section_gap,
+            track_width,
+            waveform_height,
+        )
 
         painter.setFont(self.font())
         painter.setPen(QColor(SOURCE_A_COLOR))
         painter.drawText(
-            QRectF(0, top, label_width - 5, lane_height),
+            QRectF(0, waveform_a.top(), label_width - 5, waveform_height),
             Qt.AlignmentFlag.AlignCenter,
             "A",
         )
         painter.setPen(QColor(SOURCE_B_COLOR))
         painter.drawText(
-            QRectF(0, top + lane_height + lane_gap, label_width - 5, lane_height),
+            QRectF(0, waveform_b.top(), label_width - 5, waveform_height),
             Qt.AlignmentFlag.AlignCenter,
             "B",
         )
 
-        lane_a = QRectF(track_left, top, track_width, lane_height)
-        lane_b = QRectF(
-            track_left, top + lane_height + lane_gap, track_width, lane_height
-        )
+        painter.fillRect(waveform_a, track_color)
         painter.fillRect(lane_a, track_color)
         painter.fillRect(lane_b, track_color)
+        painter.fillRect(waveform_b, track_color)
 
         if self._engine is not None and self._slot_sources:
             total_frames = self._engine.total_frames
             slot_frames = self._engine.slot_frames
+            source_chunk_indices: dict[SourceId, int] = {"A": 0, "B": 0}
+            peaks = {
+                "A": max(1e-6, float(np.max(np.abs(self._engine.source_a.samples)))),
+                "B": max(1e-6, float(np.max(np.abs(self._engine.source_b.samples)))),
+            }
             for index, source_id in enumerate(self._slot_sources):
                 start_frame = index * slot_frames
                 end_frame = min(start_frame + slot_frames, total_frames)
                 x1 = track_left + track_width * start_frame / total_frames
                 x2 = track_left + track_width * end_frame / total_frames
+
+                for waveform_source, waveform_rect, active_color in (
+                    ("A", waveform_a, QColor(SOURCE_A_COLOR)),
+                    ("B", waveform_b, QColor(SOURCE_B_COLOR)),
+                ):
+                    chunk = self._engine.preview_chunk(
+                        waveform_source,
+                        source_chunk_indices[waveform_source],
+                        index,
+                    )
+                    chunk_rect = QRectF(
+                        x1,
+                        waveform_rect.top(),
+                        max(1.0, x2 - x1),
+                        waveform_rect.height(),
+                    )
+                    self._draw_waveform(
+                        painter,
+                        chunk_rect,
+                        chunk,
+                        peaks[waveform_source],
+                        active_color if waveform_source == source_id else muted_waveform,
+                    )
+
                 slot_rect = QRectF(
                     x1,
                     lane_a.top() if source_id == "A" else lane_b.top(),
@@ -216,6 +322,14 @@ class InterleaveTimeline(QWidget):
                         round(x2),
                         round(slot_rect.bottom()),
                     )
+                painter.setPen(QColor("#3a3f49"))
+                painter.drawLine(
+                    round(x2),
+                    round(waveform_a.top()),
+                    round(x2),
+                    round(waveform_b.bottom()),
+                )
+                source_chunk_indices[source_id] += 1
 
             if self._engine.duration > 0:
                 progress = min(1.0, self._position / self._engine.duration)
@@ -223,14 +337,16 @@ class InterleaveTimeline(QWidget):
                 painter.setPen(QPen(QColor("#f4f6fa"), 2))
                 painter.drawLine(
                     round(marker_x),
-                    round(lane_a.top() - 2),
+                    round(waveform_a.top()),
                     round(marker_x),
-                    round(lane_b.bottom() + 2),
+                    round(waveform_b.bottom()),
                 )
 
         painter.setPen(QPen(border_color, 1))
+        painter.drawRect(waveform_a)
         painter.drawRect(lane_a)
         painter.drawRect(lane_b)
+        painter.drawRect(waveform_b)
         painter.end()
 
 
@@ -285,6 +401,8 @@ class MainWindow(QMainWindow):
         heading.setObjectName("heading")
         product_subheading = QLabel("A product of DG1TAL Compute Sweatshop")
         product_subheading.setObjectName("productSubheading")
+        self.revision_label = QLabel(f"Commit {_commit_hash()}")
+        self.revision_label.setObjectName("revisionLabel")
         subtitle = QLabel(
             "Build repeating chunk patterns from two independent audio sources."
         )
@@ -292,7 +410,11 @@ class MainWindow(QMainWindow):
         title_block = QVBoxLayout()
         title_block.setSpacing(3)
         title_block.addWidget(heading)
-        title_block.addWidget(product_subheading)
+        metadata_row = QHBoxLayout()
+        metadata_row.addWidget(product_subheading)
+        metadata_row.addStretch()
+        metadata_row.addWidget(self.revision_label)
+        title_block.addLayout(metadata_row)
         title_block.addSpacing(7)
         title_block.addWidget(subtitle)
         root.addLayout(title_block)
@@ -316,7 +438,7 @@ class MainWindow(QMainWindow):
         fader_header = QHBoxLayout()
         fader_title = QLabel("B OCCURRENCE FILL")
         fader_title.setObjectName("sectionTitle")
-        self.mix_label = QLabel("50%")
+        self.mix_label = QLabel("Load sources")
         self.mix_label.setObjectName("mixLabel")
         fader_header.addWidget(fader_title)
         fader_header.addStretch()
@@ -324,10 +446,12 @@ class MainWindow(QMainWindow):
         fader_layout.addLayout(fader_header)
 
         self.crossfader = QSlider(Qt.Orientation.Horizontal)
-        self.crossfader.setRange(0, 100)
-        self.crossfader.setValue(50)
+        self.crossfader.setRange(0, 1)
+        self.crossfader.setValue(0)
+        self.crossfader.setEnabled(False)
+        self.crossfader.setSingleStep(1)
         self.crossfader.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.crossfader.setTickInterval(10)
+        self.crossfader.setTickInterval(1)
         self.crossfader.valueChanged.connect(self._on_crossfader_changed)
         fader_layout.addWidget(self.crossfader)
 
@@ -527,6 +651,7 @@ class MainWindow(QMainWindow):
             QLabel#fileName { font-size: 16px; font-weight: 600; }
             QLabel#sourceDetails, QLabel#status { color: #9ca3b2; }
             QLabel#mixLabel, QLabel#settingValue { color: #c4c8d2; font-weight: 600; }
+            QLabel#revisionLabel { color: #6f7787; font-size: 10px; }
             QSpinBox#durationInput {
                 color: #c4c8d2; background: #303541; border: 1px solid #434956;
                 border-radius: 4px; padding: 3px 6px; font-weight: 600;
@@ -581,9 +706,10 @@ class MainWindow(QMainWindow):
         self._rebuild_engine()
 
     def _on_crossfader_changed(self, value: int) -> None:
-        self._fill = value / 100.0
-        self.mix_label.setText(f"{value}%")
-        self._pattern_changed()
+        capacity = self.crossfader.maximum()
+        self._fill = value / capacity if capacity > 0 else 0.0
+        self.mix_label.setText(f"{value} / {capacity} occurrences")
+        self.interleave_timeline.set_pattern(self._pattern())
 
     def _on_start_source_changed(self, starts_with_b: bool) -> None:
         self._starts_with = "B" if starts_with_b else "A"
@@ -610,6 +736,7 @@ class MainWindow(QMainWindow):
         )
 
     def _pattern_changed(self) -> None:
+        self._sync_occurrence_control()
         self.interleave_timeline.set_pattern(self._pattern())
 
     def _on_chunk_duration_changed(self, value: int) -> None:
@@ -701,6 +828,32 @@ class MainWindow(QMainWindow):
         self.burst_size_label.setText(str(self._b_chunks_per_occurrence))
         self.first_alternate_slider.blockSignals(False)
         self.burst_size_slider.blockSignals(False)
+        self._sync_occurrence_control()
+
+    def _sync_occurrence_control(self) -> None:
+        if self._engine is None:
+            self.crossfader.blockSignals(True)
+            self.crossfader.setRange(0, 1)
+            self.crossfader.setValue(0)
+            self.crossfader.setEnabled(False)
+            self.crossfader.blockSignals(False)
+            self.mix_label.setText("Load sources")
+            return
+
+        capacity = occurrence_capacity(self._engine.slot_count, self._pattern())
+        selected = min(capacity, max(0, math.floor(self._fill * capacity + 0.5)))
+        self.crossfader.blockSignals(True)
+        self.crossfader.setRange(0, max(1, capacity))
+        self.crossfader.setValue(selected)
+        self.crossfader.setEnabled(capacity > 0)
+        self.crossfader.setTickInterval(1)
+        self.crossfader.blockSignals(False)
+        if capacity > 0:
+            self._fill = selected / capacity
+            self.mix_label.setText(f"{selected} / {capacity} occurrences")
+        else:
+            self._fill = 0.0
+            self.mix_label.setText("No occurrences")
 
     def _on_loop_changed(self, checked: bool) -> None:
         self._loop = checked

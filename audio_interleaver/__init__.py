@@ -6,6 +6,7 @@ from .audio import (
     InterleavePattern,
     LoadedAudio,
     load_wav,
+    occurrence_capacity,
     write_wav,
 )
 
@@ -15,6 +16,7 @@ __all__ = [
     "InterleavePattern",
     "LoadedAudio",
     "load_wav",
+    "occurrence_capacity",
     "write_wav",
 ]
 __version__ = "0.1.0"

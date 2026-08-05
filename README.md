@@ -9,7 +9,16 @@ The pattern controls choose whether the output starts with A or B, where the
 first alternate-source chunk occurs, and how many consecutive B chunks each
 occurrence contains. One B chunk per occurrence produces `A B A B A B`; two
 produce `A B B A B B`; three produce `A B B B A B B B`. The occurrence-fill
-slider progressively enables those complete B groups from left to right.
+slider progressively enables those complete B groups from left to right and
+has exactly one meaningful step per available occurrence.
+
+The preview places source A's waveform above the interleave lanes and source
+B's waveform below them. Waveform portions used by the current pattern retain
+their source color; inactive portions remain visible in gray. Chunk boundaries,
+waveforms, and the playback marker share the same horizontal alignment. The
+application header displays the current Git commit hash for preview and bug
+report identification. Packaged builds can provide it through the
+`AUDIO_INTERLEAVER_COMMIT` environment variable.
 
 Each source advances to its own next chunk whenever it is selected; the files
 are not aligned on a shared timeline. When a boundary switches sources, an

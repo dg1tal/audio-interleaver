@@ -108,6 +108,19 @@ class InterleavePattern:
             raise ValueError("b_chunks_per_occurrence must be positive")
 
 
+def occurrence_capacity(slot_count: int, pattern: InterleavePattern) -> int:
+    """Return the number of meaningful optional B occurrences."""
+
+    if slot_count <= 0:
+        return 0
+    cycle_length = pattern.b_chunks_per_occurrence + 1
+    reference_first_b = 1 if pattern.starts_with == "A" else 2
+    return max(
+        0,
+        math.ceil((slot_count - reference_first_b) / cycle_length),
+    )
+
+
 def select_source(
     slot_index: int,
     slot_count: int,
@@ -136,11 +149,7 @@ def select_source(
     if first_b >= slot_count or slot_index < first_b:
         return "A"
 
-    reference_first_b = 1 if pattern.starts_with == "A" else 2
-    occurrence_count = max(
-        0,
-        math.ceil((slot_count - reference_first_b) / cycle_length),
-    )
+    occurrence_count = occurrence_capacity(slot_count, pattern)
     fill = float(np.clip(pattern.fill, 0.0, 1.0))
     active_occurrences = min(
         occurrence_count,
@@ -248,6 +257,28 @@ class AudioEngine:
             position = 0
         return result
 
+    def preview_chunk(
+        self,
+        source_id: SourceId,
+        chunk_index: int,
+        output_slot_index: int,
+    ) -> np.ndarray:
+        """Return a source chunk as it appears in an output preview slot."""
+
+        if output_slot_index < 0 or output_slot_index >= self.slot_count:
+            raise IndexError("output_slot_index is outside the output timeline")
+        if chunk_index < 0:
+            raise ValueError("chunk_index must be non-negative")
+        result = self._chunk(source_id, chunk_index, self.slot_frames)
+        output_start = output_slot_index * self.slot_frames
+        content_end = min(
+            self.slot_frames,
+            max(0, self.content_frames - output_start),
+        )
+        if content_end < self.slot_frames:
+            result[content_end:] = 0.0
+        return result
+
     def render_slot(
         self,
         slot_index: int,
@@ -270,10 +301,7 @@ class AudioEngine:
             )
         if source_chunk_index < 0:
             raise ValueError("source_chunk_index must be non-negative")
-        result = self._chunk(source_id, source_chunk_index, length)
-        content_end = min(length, max(0, self.content_frames - start))
-        if content_end < length:
-            result[content_end:] = 0.0
+        result = self.preview_chunk(source_id, source_chunk_index, slot_index)
 
         fade_length = min(
             self.smoothing_frames,
