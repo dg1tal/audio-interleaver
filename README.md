@@ -36,10 +36,11 @@ chunk's beginning without changing chunk order or output duration. The
 crossfade is adjustable from 0 to 50 ms and defaults to 0 ms. When the sources
 have different lengths, the shorter source loops and the timeline covers the
 longer source. A partial final output chunk is retained and padded with silence.
-Chunk duration is adjustable from 50 to 2000 ms. Both duration controls support
-exact numerical entry as well as slider adjustment. If an entire WAV is shorter
-than one chunk, every occurrence restarts at source sample zero, plays the file
-once, and silence-pads the rest of the chunk.
+Chunk duration is adjustable from 50 to 2000 ms. The chunk-duration and
+crossfade controls are arranged side by side to keep the interface compact;
+both support exact numerical entry as well as slider adjustment. If an entire
+WAV is shorter than one chunk, every occurrence restarts at source sample zero,
+plays the file once, and silence-pads the rest of the chunk.
 
 ## Requirements
 
@@ -102,13 +103,14 @@ python -m pip install -e .
 audio-interleaver
 ```
 
-Load source A and source B, configure the occurrence fill, starting source,
-first alternate chunk, B burst size, and chunk/crossfade durations, then press
-**Play**. Pattern changes made during playback take effect when the next chunk
-starts. Changing either duration stops playback and rebuilds the timeline. Use
-the **Loop** checkbox to restart the complete result whenever playback reaches
-the end. Turn it off during playback to stop looping after the current pass.
-Use **Export WAV…** to render a complete file using a snapshot of the settings.
+Load source A and source B, choose **Pattern Interleave** or **Region Insert**,
+configure that mode's controls and the chunk/crossfade durations, then press
+**Play**. Interleave changes made during playback take effect when the next
+chunk starts. Changing either duration stops playback and rebuilds the
+timeline. Use the **Loop** checkbox to restart the complete result whenever
+playback reaches the end. Turn it off during playback to stop looping after the
+current pass. Use **Export WAV…** to render a complete file using a snapshot of
+the settings.
 
 ## Test
 
