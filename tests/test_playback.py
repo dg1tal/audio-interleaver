@@ -10,7 +10,7 @@ from audio_interleaver.audio import (
     LoadedAudio,
     RegionInsert,
 )
-from audio_interleaver.playback import PlaybackController
+from audio_interleaver.playback import AudioPreviewController, PlaybackController
 
 
 class FakeOutputStream:
@@ -126,3 +126,26 @@ def test_region_insert_playback_uses_selected_b_source_window(monkeypatch):
     np.testing.assert_allclose(writes[0], 0.1)
     np.testing.assert_allclose(writes[1], 0.7)
     np.testing.assert_allclose(writes[2], 0.3)
+
+
+def test_audio_preview_controller_plays_the_supplied_buffer(monkeypatch):
+    FakeOutputStream.instances.clear()
+    monkeypatch.setattr("audio_interleaver.playback.sd.OutputStream", FakeOutputStream)
+    source = LoadedAudio(np.full((250, 1), 0.4, dtype=np.float32), 2000)
+    finished = threading.Event()
+    results = []
+    controller = AudioPreviewController(
+        on_finished=lambda preview_id, natural: (
+            results.append((preview_id, natural)),
+            finished.set(),
+        ),
+        on_error=lambda _message: None,
+    )
+
+    assert controller.start(source, "source-A")
+    assert finished.wait(2)
+
+    stream = FakeOutputStream.instances[-1]
+    assert stream.kwargs["samplerate"] == 2000
+    np.testing.assert_allclose(stream.writes[0], source.samples)
+    assert results == [("source-A", True)]

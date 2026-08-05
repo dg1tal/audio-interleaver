@@ -102,17 +102,34 @@ def test_start_source_and_first_alternate_position_control_the_prefix():
     assert sources(anchored_b, 8) == "BBBAAAAA"
 
 
-def test_center_uses_each_sources_sequential_chunks():
-    source_a = audio(np.arange(1000, dtype=np.float32))
-    source_b = audio(np.arange(1000, dtype=np.float32) + 2000)
+def test_pattern_keeps_a_timeline_fixed_while_b_advances_continuously():
+    source_a = audio(np.repeat(np.arange(6, dtype=np.float32), 360))
+    source_b = audio(np.repeat(np.arange(10, 16, dtype=np.float32), 360))
     engine = AudioEngine(source_a, source_b, smoothing_ms=0)
 
-    rendered = engine.render(InterleavePattern(fill=1.0))[:, 0]
+    pattern = InterleavePattern(fill=1.0)
+    rendered = engine.render(pattern)[:, 0].reshape(6, 360)
 
-    np.testing.assert_allclose(rendered[:360], source_a.samples[:360, 0])
-    np.testing.assert_allclose(rendered[360:720], source_b.samples[:360, 0])
-    np.testing.assert_allclose(rendered[720:1000], source_a.samples[360:640, 0])
-    np.testing.assert_allclose(rendered[1000:], 0.0)
+    np.testing.assert_allclose(rendered[:, 0], [0, 10, 2, 11, 4, 12])
+
+    assert [
+        engine.source_chunk_index_for_slot(index, pattern)
+        for index in range(engine.slot_count)
+    ] == [0, 0, 2, 1, 4, 2]
+
+
+def test_source_region_returns_exact_whole_chunks_with_final_padding():
+    engine = AudioEngine(
+        audio(np.zeros(600, dtype=np.float32)),
+        audio(np.arange(450, dtype=np.float32)),
+        slot_ms=100,
+        smoothing_ms=0,
+    )
+
+    region = engine.source_region("B", first_chunk=3, chunk_count=2)[:, 0]
+
+    np.testing.assert_allclose(region[:150], np.arange(300, 450, dtype=np.float32))
+    np.testing.assert_allclose(region[150:], 0.0)
 
 
 def test_first_inserted_b_slot_starts_with_b_chunk_zero():

@@ -31,6 +31,10 @@ def test_window_starts_waiting_for_two_sources(qtbot):
     assert window.crossfade_duration_slider.value() == 0
     assert window.crossfade_duration_input.value() == 0
     assert not window.loop_checkbox.isChecked()
+    assert window.source_a_card.preview_button.text() == "Play preview"
+    assert window.source_b_card.preview_button.text() == "Play preview"
+    assert not window.source_a_card.preview_button.isEnabled()
+    assert not window.source_b_card.preview_button.isEnabled()
 
 
 def test_loop_checkbox_updates_playback_mode(qtbot):
@@ -70,6 +74,7 @@ def test_waveform_b_starts_at_its_first_selected_slot(qtbot):
 
     assert timeline.slot_sources == tuple("AAABAB")
     assert timeline.waveform_chunk_indices("B") == (None, None, None, 0, 1, 1)
+    assert timeline.waveform_chunk_indices("A") == (0, 1, 2, 3, 4, 5)
 
 
 def test_occurrence_fill_updates_interleave_preview(qtbot):
@@ -139,6 +144,8 @@ def test_region_insert_mode_controls_source_window_and_output_position(qtbot):
 
     assert window.pattern_controls.isHidden()
     assert not window.region_controls.isHidden()
+    assert not window.region_preview_button.isHidden()
+    assert window.region_preview_button.isEnabled()
     assert window._settings() == RegionInsert(
         b_source_slot=3, output_slot=4, length_slots=3
     )
@@ -190,3 +197,68 @@ def test_duration_controls_are_arranged_side_by_side(qtbot):
     layout = window.duration_controls.layout()
     assert layout.itemAt(0).widget() is window.chunk_duration_group
     assert layout.itemAt(1).widget() is window.crossfade_duration_group
+
+
+class FakePreviewPlayback:
+    def __init__(self):
+        self.is_playing = False
+        self.starts = []
+
+    def start(self, audio, preview_id):
+        self.starts.append((audio, preview_id))
+        self.is_playing = True
+        return True
+
+    def stop(self, wait=False):
+        del wait
+        self.is_playing = False
+
+
+def test_source_cards_preview_complete_loaded_files_with_play_stop_labels(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    source_a = LoadedAudio(np.full((500, 1), 0.25, dtype=np.float32), 1000)
+    window._source_a = source_a
+    window._rebuild_engine()
+    preview = FakePreviewPlayback()
+    window._preview_playback = preview
+
+    assert window.source_a_card.preview_button.isEnabled()
+    assert not window.source_b_card.preview_button.isEnabled()
+
+    window._toggle_source_preview("A")
+
+    assert preview.starts == [(source_a, "source-A")]
+    assert window.source_a_card.preview_button.text() == "Stop preview"
+
+    window._toggle_source_preview("A")
+
+    assert not preview.is_playing
+    assert window.source_a_card.preview_button.text() == "Play preview"
+
+
+def test_region_preview_plays_selected_chunk_fitted_b_portion(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    source_a = LoadedAudio(np.zeros((600, 1), dtype=np.float32), 1000)
+    source_b = LoadedAudio(np.arange(450, dtype=np.float32)[:, None], 1000)
+    window._source_a = source_a
+    window._source_b = source_b
+    window._rebuild_engine()
+    window.mode_selector.setCurrentIndex(1)
+    window.chunk_duration_input.setValue(100)
+    window.region_length_slider.setValue(2)
+    window.region_source_slider.setValue(4)
+    preview = FakePreviewPlayback()
+    window._preview_playback = preview
+
+    window._toggle_region_preview()
+
+    preview_audio, preview_id = preview.starts[-1]
+    assert preview_id == "region-B"
+    assert preview_audio.frames == 200
+    np.testing.assert_allclose(
+        preview_audio.samples[:150, 0], np.arange(300, 450, dtype=np.float32)
+    )
+    np.testing.assert_allclose(preview_audio.samples[150:, 0], 0.0)
+    assert window.region_preview_button.text() == "Stop B region"

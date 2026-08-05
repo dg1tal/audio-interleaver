@@ -281,6 +281,10 @@ class AudioEngine:
             if selected_source == "B":
                 return settings.b_source_slot + (slot_index - settings.output_slot)
             return slot_index
+        if selected_source == "A":
+            # A is the fixed output timeline. Inserting B replaces an A chunk;
+            # it must not pause A's source position.
+            return slot_index
         return sum(
             self.source_for_slot(index, settings) == selected_source
             for index in range(slot_index)
@@ -322,6 +326,27 @@ class AudioEngine:
         if content_end < self.slot_frames:
             result[content_end:] = 0.0
         return result
+
+    def source_region(
+        self,
+        source_id: SourceId,
+        first_chunk: int,
+        chunk_count: int,
+    ) -> np.ndarray:
+        """Return a whole-chunk source selection, padding its final chunk."""
+
+        if first_chunk < 0:
+            raise ValueError("first_chunk must be non-negative")
+        if chunk_count < 1:
+            raise ValueError("chunk_count must be positive")
+        if first_chunk + chunk_count > self.source_chunk_count(source_id):
+            raise ValueError("source region extends beyond the available chunks")
+        return np.concatenate(
+            [
+                self._chunk(source_id, first_chunk + offset, self.slot_frames)
+                for offset in range(chunk_count)
+            ]
+        )
 
     def render_slot(
         self,

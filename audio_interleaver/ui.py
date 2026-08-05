@@ -44,7 +44,7 @@ from .audio import (
     occurrence_capacity,
     write_wav,
 )
-from .playback import PlaybackController
+from .playback import AudioPreviewController, PlaybackController
 
 
 SOURCE_A_COLOR = "#6ea8fe"
@@ -88,6 +88,8 @@ class _UiSignals(QObject):
     playback_position = Signal(float)
     playback_finished = Signal(bool)
     playback_error = Signal(str)
+    preview_finished = Signal(str, bool)
+    preview_error = Signal(str)
     export_progress = Signal(int)
     export_finished = Signal(str)
     export_error = Signal(str)
@@ -95,6 +97,7 @@ class _UiSignals(QObject):
 
 class SourceCard(QFrame):
     load_requested = Signal()
+    preview_requested = Signal()
 
     def __init__(self, source_name: str, accent: str) -> None:
         super().__init__()
@@ -111,6 +114,9 @@ class SourceCard(QFrame):
         self.details_label.setObjectName("sourceDetails")
         self.load_button = QPushButton(f"Load {source_name}")
         self.load_button.clicked.connect(self.load_requested)
+        self.preview_button = QPushButton("Play preview")
+        self.preview_button.setEnabled(False)
+        self.preview_button.clicked.connect(self.preview_requested)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 10, 16, 10)
@@ -119,6 +125,7 @@ class SourceCard(QFrame):
         file_row = QHBoxLayout()
         file_row.setSpacing(10)
         file_row.addWidget(self.file_label, 1)
+        file_row.addWidget(self.preview_button)
         file_row.addWidget(self.load_button)
         layout.addLayout(file_row)
         layout.addWidget(self.details_label)
@@ -206,17 +213,18 @@ class InterleaveTimeline(QWidget):
                         else None
                     )
             else:
-                next_chunk: dict[SourceId, int] = {"A": 0, "B": 0}
-                started: dict[SourceId, bool] = {"A": False, "B": False}
-                for selected_source in self._slot_sources:
-                    for source_id in ("A", "B"):
-                        chunk_indices[source_id].append(
-                            next_chunk[source_id]
-                            if started[source_id] or source_id == selected_source
-                            else None
+                b_started = False
+                for index, selected_source in enumerate(self._slot_sources):
+                    chunk_indices["A"].append(index)
+                    if selected_source == "B":
+                        b_started = True
+                    chunk_indices["B"].append(
+                        self._engine.source_chunk_index_for_slot(
+                            index, self._settings, "B"
                         )
-                    started[selected_source] = True
-                    next_chunk[selected_source] += 1
+                        if b_started
+                        else None
+                    )
             self._waveform_chunk_indices = {
                 "A": tuple(chunk_indices["A"]),
                 "B": tuple(chunk_indices["B"]),
@@ -415,6 +423,7 @@ class MainWindow(QMainWindow):
         self._chunk_ms = DEFAULT_CHUNK_MS
         self._crossfade_ms = DEFAULT_CROSSFADE_MS
         self._loop = False
+        self._preview_target: str | None = None
         self._export_thread: threading.Thread | None = None
         self._export_cancel = threading.Event()
         self._exporting = False
@@ -423,6 +432,8 @@ class MainWindow(QMainWindow):
         self._signals.playback_position.connect(self._on_playback_position)
         self._signals.playback_finished.connect(self._on_playback_finished)
         self._signals.playback_error.connect(self._on_playback_error)
+        self._signals.preview_finished.connect(self._on_preview_finished)
+        self._signals.preview_error.connect(self._on_preview_error)
         self._signals.export_progress.connect(self._on_export_progress)
         self._signals.export_finished.connect(self._on_export_finished)
         self._signals.export_error.connect(self._on_export_error)
@@ -431,6 +442,10 @@ class MainWindow(QMainWindow):
             on_position=self._signals.playback_position.emit,
             on_finished=self._signals.playback_finished.emit,
             on_error=self._signals.playback_error.emit,
+        )
+        self._preview_playback = AudioPreviewController(
+            on_finished=self._signals.preview_finished.emit,
+            on_error=self._signals.preview_error.emit,
         )
 
         self._build_ui()
@@ -473,6 +488,12 @@ class MainWindow(QMainWindow):
         self.source_b_card = SourceCard("B", SOURCE_B_COLOR)
         self.source_a_card.load_requested.connect(lambda: self._load_source("A"))
         self.source_b_card.load_requested.connect(lambda: self._load_source("B"))
+        self.source_a_card.preview_requested.connect(
+            lambda: self._toggle_source_preview("A")
+        )
+        self.source_b_card.preview_requested.connect(
+            lambda: self._toggle_source_preview("B")
+        )
         cards.addWidget(self.source_a_card)
         cards.addWidget(self.source_b_card)
         root.addLayout(cards)
@@ -745,6 +766,14 @@ class MainWindow(QMainWindow):
 
         self.interleave_timeline = InterleaveTimeline()
         fader_layout.addWidget(self.interleave_timeline)
+        region_preview_row = QHBoxLayout()
+        region_preview_row.addStretch()
+        self.region_preview_button = QPushButton("Preview B region")
+        self.region_preview_button.clicked.connect(self._toggle_region_preview)
+        self.region_preview_button.setVisible(False)
+        self.region_preview_button.setEnabled(False)
+        region_preview_row.addWidget(self.region_preview_button)
+        fader_layout.addLayout(region_preview_row)
         root.addWidget(fader_panel)
 
         transport = QFrame()
@@ -847,7 +876,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Could not load WAV", str(exc))
             return
 
-        self._stop_playback(wait=True, reset=True)
+        self._stop_all_playback(wait=True, reset=True)
         if source_id == "A":
             self._source_a = audio
             self.source_a_card.display_audio(audio)
@@ -865,19 +894,27 @@ class MainWindow(QMainWindow):
             self.interleave_timeline.set_settings(self._settings())
 
     def _on_mode_changed(self, index: int) -> None:
+        if self._preview_target == "region-B":
+            self._stop_preview(wait=True)
         self._mode = str(self.mode_selector.itemData(index))
         self.pattern_controls.setVisible(self._mode == "pattern")
         self.region_controls.setVisible(self._mode == "region")
+        self.region_preview_button.setVisible(self._mode == "region")
         self._sync_region_controls()
         self.interleave_timeline.set_settings(self._settings())
+        self._refresh_actions()
 
     def _on_region_source_changed(self, chunk_number: int) -> None:
+        if self._preview_target == "region-B":
+            self._stop_preview(wait=True)
         self._region_b_source_slot = chunk_number - 1
         self.region_source_label.setText(f"Chunk {chunk_number}")
         if self._mode == "region":
             self.interleave_timeline.set_settings(self._settings())
 
     def _on_region_length_changed(self, chunks: int) -> None:
+        if self._preview_target == "region-B":
+            self._stop_preview(wait=True)
         self._region_length_slots = chunks
         self._sync_region_controls()
         if self._mode == "region":
@@ -950,7 +987,7 @@ class MainWindow(QMainWindow):
         self._configuration_changed()
 
     def _configuration_changed(self) -> None:
-        self._stop_playback(wait=True, reset=True)
+        self._stop_all_playback(wait=True, reset=True)
         self._rebuild_engine()
 
     def _rebuild_engine(self) -> None:
@@ -1104,6 +1141,7 @@ class MainWindow(QMainWindow):
             return
         if self._engine is None:
             return
+        self._stop_preview(wait=True)
         self.progress.setValue(0)
         self._update_time(0.0)
         if self._playback.start(self._engine, self._settings, lambda: self._loop):
@@ -1121,6 +1159,78 @@ class MainWindow(QMainWindow):
             self._update_time(0.0)
         if self._engine is not None and not self._exporting:
             self.status_label.setText("Ready")
+
+    def _toggle_source_preview(self, source_id: SourceId) -> None:
+        target = f"source-{source_id}"
+        if self._preview_playback.is_playing and self._preview_target == target:
+            self._stop_preview()
+            return
+        audio = self._source_a if source_id == "A" else self._source_b
+        if audio is None:
+            return
+        self._start_preview(audio, target)
+
+    def _toggle_region_preview(self) -> None:
+        target = "region-B"
+        if self._preview_playback.is_playing and self._preview_target == target:
+            self._stop_preview()
+            return
+        if self._engine is None or self._mode != "region":
+            return
+        samples = self._engine.source_region(
+            "B", self._region_b_source_slot, self._region_length_slots
+        )
+        audio = LoadedAudio(samples, self._engine.sample_rate)
+        self._start_preview(audio, target)
+
+    def _start_preview(self, audio: LoadedAudio, target: str) -> None:
+        self._stop_playback(wait=True, reset=True)
+        self._stop_preview(wait=True)
+        self._preview_target = target
+        if self._preview_playback.start(audio, target):
+            self._sync_preview_buttons()
+            description = (
+                "selected B region" if target == "region-B" else f"source {target[-1]}"
+            )
+            self.status_label.setText(f"Previewing {description}")
+        else:
+            self._preview_target = None
+            self._sync_preview_buttons()
+
+    def _stop_preview(self, wait: bool = False) -> None:
+        self._preview_playback.stop(wait=wait)
+        self._preview_target = None
+        self._sync_preview_buttons()
+        if self._engine is not None and not self._exporting:
+            self.status_label.setText("Ready")
+
+    def _stop_all_playback(self, wait: bool = False, reset: bool = False) -> None:
+        self._stop_playback(wait=wait, reset=reset)
+        self._stop_preview(wait=wait)
+
+    def _sync_preview_buttons(self) -> None:
+        self.source_a_card.preview_button.setText(
+            "Stop preview" if self._preview_target == "source-A" else "Play preview"
+        )
+        self.source_b_card.preview_button.setText(
+            "Stop preview" if self._preview_target == "source-B" else "Play preview"
+        )
+        self.region_preview_button.setText(
+            "Stop B region"
+            if self._preview_target == "region-B"
+            else "Preview B region"
+        )
+
+    def _on_preview_finished(self, target: str, natural: bool) -> None:
+        if target != self._preview_target:
+            return
+        self._preview_target = None
+        self._sync_preview_buttons()
+        if not self._exporting:
+            self.status_label.setText("Preview finished" if natural else "Ready")
+
+    def _on_preview_error(self, message: str) -> None:
+        QMessageBox.critical(self, "Audio preview error", message)
 
     def _on_playback_position(self, seconds: float) -> None:
         if self._engine is None:
@@ -1162,7 +1272,7 @@ class MainWindow(QMainWindow):
         if output_path.suffix.lower() not in (".wav", ".wave"):
             output_path = output_path.with_suffix(".wav")
 
-        self._stop_playback(wait=True, reset=True)
+        self._stop_all_playback(wait=True, reset=True)
         engine = self._engine
         snapshot = self._settings()
         self._export_cancel.clear()
@@ -1222,9 +1332,17 @@ class MainWindow(QMainWindow):
         self.export_button.setEnabled(ready)
         self.source_a_card.load_button.setEnabled(not self._exporting)
         self.source_b_card.load_button.setEnabled(not self._exporting)
+        self.source_a_card.preview_button.setEnabled(
+            self._source_a is not None and not self._exporting
+        )
+        self.source_b_card.preview_button.setEnabled(
+            self._source_b is not None and not self._exporting
+        )
+        self.region_preview_button.setEnabled(ready and self._mode == "region")
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._playback.stop(wait=True)
+        self._preview_playback.stop(wait=True)
         self._export_cancel.set()
         if self._export_thread is not None:
             self._export_thread.join(timeout=2.0)

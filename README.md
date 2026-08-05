@@ -29,18 +29,20 @@ current Git commit hash for preview and bug report identification. Packaged
 builds can provide it through the `AUDIO_INTERLEAVER_COMMIT` environment
 variable.
 
-Each source advances to its own next chunk whenever it is selected; the files
-are not aligned on a shared timeline. When a boundary switches sources, an
-equal-power transition crossfades the previous chunk's tail into the next
-chunk's beginning without changing chunk order or output duration. The
-crossfade is adjustable from 0 to 50 ms and defaults to 0 ms. When the sources
-have different lengths, the shorter source loops and the timeline covers the
-longer source. A partial final output chunk is retained and padded with silence.
-Chunk duration is adjustable from 50 to 2000 ms. The chunk-duration and
-crossfade controls are arranged side by side to keep the interface compact;
-both support exact numerical entry as well as slider adjustment. If an entire
-WAV is shorter than one chunk, every occurrence restarts at source sample zero,
-plays the file once, and silence-pads the rest of the chunk.
+Source A is the fixed output reference: a B insertion replaces the A material
+at that position rather than pausing A. Source B advances continuously through
+only its selected slots, so `A B A B A B` uses chunks `A0, B0, A2, B1, A4,
+B2`. When a boundary switches sources, an equal-power transition crossfades
+the previous chunk's tail into the next chunk's beginning without changing
+chunk order or output duration. The crossfade is adjustable from 0 to 50 ms
+and defaults to 0 ms. When the sources have different lengths, the shorter
+source loops and the timeline covers the longer source. A partial final output
+chunk is retained and padded with silence. Chunk duration is adjustable from
+50 to 2000 ms. The chunk-duration and crossfade controls are arranged side by
+side to keep the interface compact; both support exact numerical entry as well
+as slider adjustment. If an entire WAV is shorter than one chunk, every
+occurrence restarts at source sample zero, plays the file once, and
+silence-pads the rest of the chunk.
 
 ## Requirements
 
@@ -109,8 +111,11 @@ configure that mode's controls and the chunk/crossfade durations, then press
 chunk starts. Changing either duration stops playback and rebuilds the
 timeline. Use the **Loop** checkbox to restart the complete result whenever
 playback reaches the end. Turn it off during playback to stop looping after the
-current pass. Use **Export WAV…** to render a complete file using a snapshot of
-the settings.
+current pass. Each source card's **Play preview** button auditions its complete
+loaded file and changes to **Stop preview** during playback. In Region Insert
+mode, **Preview B region** auditions exactly the selected whole-chunk source B
+window, including final-chunk silence padding. Use **Export WAV…** to render a
+complete file using a snapshot of the settings.
 
 ## Test
 

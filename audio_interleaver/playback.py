@@ -7,13 +7,14 @@ import threading
 
 import sounddevice as sd
 
-from .audio import AudioEngine, InterleaveSettings, SourceId
+from .audio import AudioEngine, InterleaveSettings, LoadedAudio, SourceId
 
 SettingsProvider = Callable[[], InterleaveSettings]
 LoopProvider = Callable[[], bool]
 PositionCallback = Callable[[float], None]
 FinishedCallback = Callable[[bool], None]
 ErrorCallback = Callable[[str], None]
+PreviewFinishedCallback = Callable[[str, bool], None]
 
 
 class PlaybackController:
@@ -138,3 +139,81 @@ class PlaybackController:
             with self._lock:
                 self._thread = None
             self._on_finished(natural_finish)
+
+
+class AudioPreviewController:
+    """Play one loaded audio buffer at a time on a worker thread."""
+
+    def __init__(
+        self,
+        on_finished: PreviewFinishedCallback,
+        on_error: ErrorCallback,
+    ) -> None:
+        self._on_finished = on_finished
+        self._on_error = on_error
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._stream: sd.OutputStream | None = None
+        self._lock = threading.Lock()
+
+    @property
+    def is_playing(self) -> bool:
+        with self._lock:
+            return self._thread is not None and self._thread.is_alive()
+
+    def start(self, audio: LoadedAudio, preview_id: str) -> bool:
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return False
+            self._stop_event.clear()
+            self._thread = threading.Thread(
+                target=self._run,
+                args=(audio, preview_id),
+                name="audio-preview",
+                daemon=True,
+            )
+            self._thread.start()
+        return True
+
+    def stop(self, wait: bool = False) -> None:
+        self._stop_event.set()
+        with self._lock:
+            stream = self._stream
+            thread = self._thread
+        if stream is not None:
+            try:
+                stream.abort()
+            except sd.PortAudioError:
+                pass
+        if wait and thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+
+    def _run(self, audio: LoadedAudio, preview_id: str) -> None:
+        natural_finish = False
+        try:
+            stream = sd.OutputStream(
+                samplerate=audio.sample_rate,
+                channels=audio.channels,
+                dtype="float32",
+            )
+            with self._lock:
+                self._stream = stream
+            stream.start()
+            if not self._stop_event.is_set():
+                stream.write(audio.samples)
+            natural_finish = not self._stop_event.is_set()
+        except Exception as exc:  # PortAudio errors vary by host and device.
+            if not self._stop_event.is_set():
+                self._on_error(f"Preview playback failed: {exc}")
+        finally:
+            with self._lock:
+                stream = self._stream
+                self._stream = None
+            if stream is not None:
+                try:
+                    stream.close()
+                except sd.PortAudioError:
+                    pass
+            with self._lock:
+                self._thread = None
+            self._on_finished(preview_id, natural_finish)
