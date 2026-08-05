@@ -7,9 +7,9 @@ import threading
 
 import sounddevice as sd
 
-from .audio import AudioEngine, InterleavePattern, SourceId
+from .audio import AudioEngine, InterleaveSettings, SourceId
 
-PatternProvider = Callable[[], InterleavePattern]
+SettingsProvider = Callable[[], InterleaveSettings]
 LoopProvider = Callable[[], bool]
 PositionCallback = Callable[[float], None]
 FinishedCallback = Callable[[bool], None]
@@ -19,7 +19,7 @@ ErrorCallback = Callable[[str], None]
 class PlaybackController:
     """Stream rendered slots on a worker thread.
 
-    Pattern settings are sampled immediately before each slot is rendered,
+    Interleave settings are sampled immediately before each slot is rendered,
     which makes UI changes take effect at the next chunk boundary.
     """
 
@@ -45,7 +45,7 @@ class PlaybackController:
     def start(
         self,
         engine: AudioEngine,
-        pattern: PatternProvider,
+        settings: SettingsProvider,
         loop: LoopProvider | None = None,
     ) -> bool:
         with self._lock:
@@ -54,7 +54,7 @@ class PlaybackController:
             self._stop_event.clear()
             self._thread = threading.Thread(
                 target=self._run,
-                args=(engine, pattern, loop),
+                args=(engine, settings, loop),
                 name="audio-playback",
                 daemon=True,
             )
@@ -77,7 +77,7 @@ class PlaybackController:
     def _run(
         self,
         engine: AudioEngine,
-        pattern: PatternProvider,
+        settings: SettingsProvider,
         loop: LoopProvider | None,
     ) -> None:
         natural_finish = False
@@ -91,22 +91,23 @@ class PlaybackController:
                 self._stream = stream
             stream.start()
             while not self._stop_event.is_set():
-                source_chunk_indices: dict[SourceId, int] = {"A": 0, "B": 0}
                 previous_source: SourceId | None = None
                 previous_chunk = None
                 for slot_index in range(engine.slot_count):
                     if self._stop_event.is_set():
                         break
-                    settings = pattern()
-                    source_id = engine.source_for_slot(slot_index, settings)
+                    current_settings = settings()
+                    source_id = engine.source_for_slot(slot_index, current_settings)
+                    source_chunk_index = engine.source_chunk_index_for_slot(
+                        slot_index, current_settings, source_id
+                    )
                     slot, previous_source = engine.render_slot(
                         slot_index,
-                        settings,
-                        source_chunk_indices[source_id],
+                        current_settings,
+                        source_chunk_index,
                         previous_source,
                         previous_chunk,
                     )
-                    source_chunk_indices[source_id] += 1
                     previous_chunk = slot
                     stream.write(slot)
                     if self._stop_event.is_set():

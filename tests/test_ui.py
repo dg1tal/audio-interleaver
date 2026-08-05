@@ -1,7 +1,12 @@
 import numpy as np
 from PySide6.QtWidgets import QLabel
 
-from audio_interleaver.audio import AudioEngine, InterleavePattern, LoadedAudio
+from audio_interleaver.audio import (
+    AudioEngine,
+    InterleavePattern,
+    LoadedAudio,
+    RegionInsert,
+)
 from audio_interleaver.ui import InterleaveTimeline, MainWindow
 
 
@@ -54,6 +59,19 @@ def test_interleave_timeline_tracks_slot_selection_and_position(qtbot):
     assert timeline.position == 0.72
 
 
+def test_waveform_b_starts_at_its_first_selected_slot(qtbot):
+    source = LoadedAudio(np.zeros((2160, 1), dtype=np.float32), 1000)
+    engine = AudioEngine(source, source)
+    timeline = InterleaveTimeline()
+    qtbot.addWidget(timeline)
+
+    timeline.set_engine(engine)
+    timeline.set_pattern(InterleavePattern(fill=1.0, first_alternate_slot=3))
+
+    assert timeline.slot_sources == tuple("AAABAB")
+    assert timeline.waveform_chunk_indices("B") == (None, None, None, 0, 1, 1)
+
+
 def test_occurrence_fill_updates_interleave_preview(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
@@ -104,6 +122,38 @@ def test_occurrence_fill_has_one_meaningful_step_per_occurrence(qtbot):
 
     assert len(set(patterns)) == 5
     assert window.mix_label.text() == "4 / 4 occurrences"
+
+
+def test_region_insert_mode_controls_source_window_and_output_position(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    source = LoadedAudio(np.zeros((3240, 1), dtype=np.float32), 1000)
+    window._source_a = source
+    window._source_b = source
+    window._rebuild_engine()
+
+    window.mode_selector.setCurrentIndex(1)
+    window.region_length_slider.setValue(3)
+    window.region_source_slider.setValue(4)
+    window.region_output_slider.setValue(5)
+
+    assert window.pattern_controls.isHidden()
+    assert not window.region_controls.isHidden()
+    assert window._settings() == RegionInsert(
+        b_source_slot=3, output_slot=4, length_slots=3
+    )
+    assert window.interleave_timeline.slot_sources == tuple("AAAABBBAA")
+    assert window.interleave_timeline.waveform_chunk_indices("B") == (
+        None,
+        None,
+        None,
+        None,
+        3,
+        4,
+        5,
+        None,
+        None,
+    )
 
 
 def test_duration_sliders_and_numeric_inputs_stay_synchronized(qtbot):

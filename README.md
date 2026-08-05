@@ -12,13 +12,22 @@ produce `A B B A B B`; three produce `A B B B A B B B`. The occurrence-fill
 slider progressively enables those complete B groups from left to right and
 has exactly one meaningful step per available occurrence.
 
+The mode selector also provides **Region Insert**. In this mode, source A forms
+the baseline output timeline and a contiguous window from source B replaces a
+contiguous range of A chunks. Independent snapping controls select the first B
+source chunk, the region length in whole chunks, and the output chunk where the
+replacement begins. The B source window always remains intact; only placement
+beyond the end of the output timeline clips the inserted region.
+
 The preview places source A's waveform above the interleave lanes and source
 B's waveform below them. Waveform portions used by the current pattern retain
 their source color; inactive portions remain visible in gray. Chunk boundaries,
-waveforms, and the playback marker share the same horizontal alignment. The
-application header displays the current Git commit hash for preview and bug
-report identification. Packaged builds can provide it through the
-`AUDIO_INTERLEAVER_COMMIT` environment variable.
+waveforms, and the playback marker share the same horizontal alignment. A
+source waveform begins at that source's first selected slot, so B sample zero
+aligns with the first inserted B chunk. The application header displays the
+current Git commit hash for preview and bug report identification. Packaged
+builds can provide it through the `AUDIO_INTERLEAVER_COMMIT` environment
+variable.
 
 Each source advances to its own next chunk whenever it is selected; the files
 are not aligned on a shared timeline. When a boundary switches sources, an
@@ -28,7 +37,9 @@ crossfade is adjustable from 0 to 50 ms and defaults to 0 ms. When the sources
 have different lengths, the shorter source loops and the timeline covers the
 longer source. A partial final output chunk is retained and padded with silence.
 Chunk duration is adjustable from 50 to 2000 ms. Both duration controls support
-exact numerical entry as well as slider adjustment.
+exact numerical entry as well as slider adjustment. If an entire WAV is shorter
+than one chunk, every occurrence restarts at source sample zero, plays the file
+once, and silence-pads the rest of the chunk.
 
 ## Requirements
 

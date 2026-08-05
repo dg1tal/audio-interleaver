@@ -108,6 +108,26 @@ class InterleavePattern:
             raise ValueError("b_chunks_per_occurrence must be positive")
 
 
+@dataclass(frozen=True, slots=True)
+class RegionInsert:
+    """A contiguous window from source B placed into the A output timeline."""
+
+    b_source_slot: int = 0
+    output_slot: int = 0
+    length_slots: int = 1
+
+    def __post_init__(self) -> None:
+        if self.b_source_slot < 0:
+            raise ValueError("b_source_slot must be non-negative")
+        if self.output_slot < 0:
+            raise ValueError("output_slot must be non-negative")
+        if self.length_slots < 1:
+            raise ValueError("length_slots must be positive")
+
+
+InterleaveSettings = InterleavePattern | RegionInsert
+
+
 def occurrence_capacity(slot_count: int, pattern: InterleavePattern) -> int:
     """Return the number of meaningful optional B occurrences."""
 
@@ -124,15 +144,22 @@ def occurrence_capacity(slot_count: int, pattern: InterleavePattern) -> int:
 def select_source(
     slot_index: int,
     slot_count: int,
-    pattern: InterleavePattern,
+    settings: InterleaveSettings,
 ) -> SourceId:
-    """Select a source from the active left-to-right occurrence pattern."""
+    """Select a source for either supported interleave mode."""
 
     if slot_count <= 0:
         raise ValueError("slot_count must be positive")
     if slot_index < 0 or slot_index >= slot_count:
         raise IndexError("slot_index is outside the output timeline")
 
+    if isinstance(settings, RegionInsert):
+        region_end = min(slot_count, settings.output_slot + settings.length_slots)
+        if settings.output_slot <= slot_index < region_end:
+            return "B"
+        return "A"
+
+    pattern = settings
     first_alternate = min(pattern.first_alternate_slot, slot_count)
     if slot_index < first_alternate:
         return pattern.starts_with
@@ -236,25 +263,42 @@ class AudioEngine:
         return math.ceil(self.content_frames / self.slot_frames)
 
     def source_for_slot(
-        self, slot_index: int, pattern: InterleavePattern
+        self, slot_index: int, settings: InterleaveSettings
     ) -> SourceId:
-        return select_source(slot_index, self.slot_count, pattern)
+        return select_source(slot_index, self.slot_count, settings)
+
+    def source_chunk_count(self, source_id: SourceId) -> int:
+        return math.ceil(self._source(source_id).frames / self.slot_frames)
+
+    def source_chunk_index_for_slot(
+        self,
+        slot_index: int,
+        settings: InterleaveSettings,
+        source_id: SourceId | None = None,
+    ) -> int:
+        selected_source = source_id or self.source_for_slot(slot_index, settings)
+        if isinstance(settings, RegionInsert):
+            if selected_source == "B":
+                return settings.b_source_slot + (slot_index - settings.output_slot)
+            return slot_index
+        return sum(
+            self.source_for_slot(index, settings) == selected_source
+            for index in range(slot_index)
+        )
 
     def _source(self, source_id: SourceId) -> LoadedAudio:
         return self.source_a if source_id == "A" else self.source_b
 
     def _chunk(self, source_id: SourceId, chunk_index: int, length: int) -> np.ndarray:
-        """Read the next independent chunk from a source, looping if necessary."""
+        """Read an independent source chunk, padding a sub-chunk file."""
 
         source = self._source(source_id).samples
-        result = np.empty((length, self.channels), dtype=np.float32)
-        written = 0
-        position = (chunk_index * self.slot_frames) % len(source)
-        while written < length:
-            available = min(length - written, len(source) - position)
-            result[written : written + available] = source[position : position + available]
-            written += available
-            position = 0
+        source_chunk_count = self.source_chunk_count(source_id)
+        source_chunk_index = chunk_index % source_chunk_count
+        source_start = source_chunk_index * self.slot_frames
+        result = np.zeros((length, self.channels), dtype=np.float32)
+        copied = min(length, len(source) - source_start)
+        result[:copied] = source[source_start : source_start + copied]
         return result
 
     def preview_chunk(
@@ -282,7 +326,7 @@ class AudioEngine:
     def render_slot(
         self,
         slot_index: int,
-        pattern: InterleavePattern,
+        settings: InterleaveSettings,
         source_chunk_index: int | None = None,
         previous_source: SourceId | None = None,
         previous_chunk: np.ndarray | None = None,
@@ -293,11 +337,10 @@ class AudioEngine:
             raise IndexError("slot_index is outside the output timeline")
         start = slot_index * self.slot_frames
         length = min(self.slot_frames, self.total_frames - start)
-        source_id = self.source_for_slot(slot_index, pattern)
+        source_id = self.source_for_slot(slot_index, settings)
         if source_chunk_index is None:
-            source_chunk_index = sum(
-                self.source_for_slot(index, pattern) == source_id
-                for index in range(slot_index)
+            source_chunk_index = self.source_chunk_index_for_slot(
+                slot_index, settings, source_id
             )
         if source_chunk_index < 0:
             raise ValueError("source_chunk_index must be non-negative")
@@ -326,28 +369,29 @@ class AudioEngine:
 
     def render(
         self,
-        pattern: InterleavePattern,
+        settings: InterleaveSettings,
         progress: ProgressCallback | None = None,
         cancel_event: Event | None = None,
     ) -> np.ndarray:
-        """Render the complete output using a fixed pattern snapshot."""
+        """Render the complete output using a fixed settings snapshot."""
 
         output = np.empty((self.total_frames, self.channels), dtype=np.float32)
-        source_chunk_indices: dict[SourceId, int] = {"A": 0, "B": 0}
         previous_source: SourceId | None = None
         previous_chunk: np.ndarray | None = None
         for slot_index in range(self.slot_count):
             if cancel_event is not None and cancel_event.is_set():
                 raise RenderingCancelled("Rendering was cancelled.")
-            source_id = self.source_for_slot(slot_index, pattern)
+            source_id = self.source_for_slot(slot_index, settings)
+            source_chunk_index = self.source_chunk_index_for_slot(
+                slot_index, settings, source_id
+            )
             slot, previous_source = self.render_slot(
                 slot_index,
-                pattern,
-                source_chunk_indices[source_id],
+                settings,
+                source_chunk_index,
                 previous_source,
                 previous_chunk,
             )
-            source_chunk_indices[source_id] += 1
             previous_chunk = slot
             start = slot_index * self.slot_frames
             output[start : start + len(slot)] = slot

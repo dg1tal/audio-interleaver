@@ -16,6 +16,7 @@ from PySide6.QtGui import QColor, QCloseEvent, QFont, QPaintEvent, QPainter, QPe
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -34,7 +35,9 @@ from .audio import (
     AudioEngine,
     AudioError,
     InterleavePattern,
+    InterleaveSettings,
     LoadedAudio,
+    RegionInsert,
     RenderingCancelled,
     SourceId,
     load_wav,
@@ -134,9 +137,12 @@ class InterleaveTimeline(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._engine: AudioEngine | None = None
-        self._pattern = InterleavePattern()
+        self._settings: InterleaveSettings = InterleavePattern()
         self._position = 0.0
         self._slot_sources: tuple[str, ...] = ()
+        self._waveform_chunk_indices: dict[
+            SourceId, tuple[int | None, ...]
+        ] = {"A": (), "B": ()}
         self.setMinimumHeight(116)
         self.setSizePolicy(
             self.sizePolicy().horizontalPolicy(),
@@ -155,6 +161,11 @@ class InterleaveTimeline(QWidget):
     def position(self) -> float:
         return self._position
 
+    def waveform_chunk_indices(
+        self, source_id: SourceId
+    ) -> tuple[int | None, ...]:
+        return self._waveform_chunk_indices[source_id]
+
     def sizeHint(self) -> QSize:
         return QSize(640, 116)
 
@@ -163,9 +174,12 @@ class InterleaveTimeline(QWidget):
         self._position = 0.0
         self._rebuild_slots()
 
-    def set_pattern(self, pattern: InterleavePattern) -> None:
-        self._pattern = pattern
+    def set_settings(self, settings: InterleaveSettings) -> None:
+        self._settings = settings
         self._rebuild_slots()
+
+    def set_pattern(self, pattern: InterleavePattern) -> None:
+        self.set_settings(pattern)
 
     def set_position(self, seconds: float) -> None:
         self._position = max(0.0, seconds)
@@ -174,11 +188,39 @@ class InterleaveTimeline(QWidget):
     def _rebuild_slots(self) -> None:
         if self._engine is None:
             self._slot_sources = ()
+            self._waveform_chunk_indices = {"A": (), "B": ()}
         else:
             self._slot_sources = tuple(
-                self._engine.source_for_slot(index, self._pattern)
+                self._engine.source_for_slot(index, self._settings)
                 for index in range(self._engine.slot_count)
             )
+            chunk_indices: dict[SourceId, list[int | None]] = {"A": [], "B": []}
+            if isinstance(self._settings, RegionInsert):
+                for index, selected_source in enumerate(self._slot_sources):
+                    chunk_indices["A"].append(index)
+                    chunk_indices["B"].append(
+                        self._engine.source_chunk_index_for_slot(
+                            index, self._settings, "B"
+                        )
+                        if selected_source == "B"
+                        else None
+                    )
+            else:
+                next_chunk: dict[SourceId, int] = {"A": 0, "B": 0}
+                started: dict[SourceId, bool] = {"A": False, "B": False}
+                for selected_source in self._slot_sources:
+                    for source_id in ("A", "B"):
+                        chunk_indices[source_id].append(
+                            next_chunk[source_id]
+                            if started[source_id] or source_id == selected_source
+                            else None
+                        )
+                    started[selected_source] = True
+                    next_chunk[selected_source] += 1
+            self._waveform_chunk_indices = {
+                "A": tuple(chunk_indices["A"]),
+                "B": tuple(chunk_indices["B"]),
+            }
         self.update()
 
     @staticmethod
@@ -214,6 +256,7 @@ class InterleaveTimeline(QWidget):
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.fillRect(self.rect(), QColor("#20232b"))
 
         label_width = 22.0
         right_margin = 1.0
@@ -270,7 +313,6 @@ class InterleaveTimeline(QWidget):
         if self._engine is not None and self._slot_sources:
             total_frames = self._engine.total_frames
             slot_frames = self._engine.slot_frames
-            source_chunk_indices: dict[SourceId, int] = {"A": 0, "B": 0}
             peaks = {
                 "A": max(1e-6, float(np.max(np.abs(self._engine.source_a.samples)))),
                 "B": max(1e-6, float(np.max(np.abs(self._engine.source_b.samples)))),
@@ -285,10 +327,13 @@ class InterleaveTimeline(QWidget):
                     ("A", waveform_a, QColor(SOURCE_A_COLOR)),
                     ("B", waveform_b, QColor(SOURCE_B_COLOR)),
                 ):
+                    chunk_index = self._waveform_chunk_indices[waveform_source][
+                        index
+                    ]
+                    if chunk_index is None:
+                        continue
                     chunk = self._engine.preview_chunk(
-                        waveform_source,
-                        source_chunk_indices[waveform_source],
-                        index,
+                        waveform_source, chunk_index, index
                     )
                     chunk_rect = QRectF(
                         x1,
@@ -329,7 +374,6 @@ class InterleaveTimeline(QWidget):
                     round(x2),
                     round(waveform_b.bottom()),
                 )
-                source_chunk_indices[source_id] += 1
 
             if self._engine.duration > 0:
                 progress = min(1.0, self._position / self._engine.duration)
@@ -360,10 +404,14 @@ class MainWindow(QMainWindow):
         self._source_a: LoadedAudio | None = None
         self._source_b: LoadedAudio | None = None
         self._engine: AudioEngine | None = None
+        self._mode = "pattern"
         self._fill = 0.5
         self._starts_with: SourceId = "A"
         self._first_alternate_slot = 1
         self._b_chunks_per_occurrence = 1
+        self._region_b_source_slot = 0
+        self._region_output_slot = 0
+        self._region_length_slots = 1
         self._chunk_ms = DEFAULT_CHUNK_MS
         self._crossfade_ms = DEFAULT_CROSSFADE_MS
         self._loop = False
@@ -435,6 +483,23 @@ class MainWindow(QMainWindow):
         fader_layout.setContentsMargins(22, 18, 22, 18)
         fader_layout.setSpacing(6)
 
+        mode_header = QHBoxLayout()
+        mode_title = QLabel("MODE")
+        mode_title.setObjectName("sectionTitle")
+        self.mode_selector = QComboBox()
+        self.mode_selector.addItem("Pattern Interleave", "pattern")
+        self.mode_selector.addItem("Region Insert", "region")
+        self.mode_selector.currentIndexChanged.connect(self._on_mode_changed)
+        mode_header.addWidget(mode_title)
+        mode_header.addStretch()
+        mode_header.addWidget(self.mode_selector)
+        fader_layout.addLayout(mode_header)
+
+        self.pattern_controls = QWidget()
+        pattern_layout = QVBoxLayout(self.pattern_controls)
+        pattern_layout.setContentsMargins(0, 0, 0, 0)
+        pattern_layout.setSpacing(6)
+
         fader_header = QHBoxLayout()
         fader_title = QLabel("B OCCURRENCE FILL")
         fader_title.setObjectName("sectionTitle")
@@ -443,7 +508,7 @@ class MainWindow(QMainWindow):
         fader_header.addWidget(fader_title)
         fader_header.addStretch()
         fader_header.addWidget(self.mix_label)
-        fader_layout.addLayout(fader_header)
+        pattern_layout.addLayout(fader_header)
 
         self.crossfader = QSlider(Qt.Orientation.Horizontal)
         self.crossfader.setRange(0, 1)
@@ -453,7 +518,7 @@ class MainWindow(QMainWindow):
         self.crossfader.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.crossfader.setTickInterval(1)
         self.crossfader.valueChanged.connect(self._on_crossfader_changed)
-        fader_layout.addWidget(self.crossfader)
+        pattern_layout.addWidget(self.crossfader)
 
         fader_labels = QHBoxLayout()
         fader_labels.addWidget(QLabel("Minimum pattern"))
@@ -463,7 +528,7 @@ class MainWindow(QMainWindow):
         right_label = QLabel("All occurrences")
         right_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         fader_labels.addWidget(right_label)
-        fader_layout.addLayout(fader_labels)
+        pattern_layout.addLayout(fader_labels)
 
         pattern_options = QHBoxLayout()
         self.start_with_b_checkbox = QCheckBox("Start with B")
@@ -473,8 +538,8 @@ class MainWindow(QMainWindow):
         self.start_with_b_checkbox.toggled.connect(self._on_start_source_changed)
         pattern_options.addWidget(self.start_with_b_checkbox)
         pattern_options.addStretch()
-        fader_layout.addSpacing(6)
-        fader_layout.addLayout(pattern_options)
+        pattern_layout.addSpacing(6)
+        pattern_layout.addLayout(pattern_options)
 
         alternate_header = QHBoxLayout()
         self.first_alternate_title = QLabel("FIRST B CHUNK")
@@ -484,7 +549,7 @@ class MainWindow(QMainWindow):
         alternate_header.addWidget(self.first_alternate_title)
         alternate_header.addStretch()
         alternate_header.addWidget(self.first_alternate_label)
-        fader_layout.addLayout(alternate_header)
+        pattern_layout.addLayout(alternate_header)
 
         self.first_alternate_slider = QSlider(Qt.Orientation.Horizontal)
         self.first_alternate_slider.setRange(2, 2)
@@ -498,7 +563,7 @@ class MainWindow(QMainWindow):
         self.first_alternate_slider.valueChanged.connect(
             self._on_first_alternate_changed
         )
-        fader_layout.addWidget(self.first_alternate_slider)
+        pattern_layout.addWidget(self.first_alternate_slider)
 
         burst_header = QHBoxLayout()
         burst_title = QLabel("B CHUNKS PER OCCURRENCE")
@@ -508,7 +573,7 @@ class MainWindow(QMainWindow):
         burst_header.addWidget(burst_title)
         burst_header.addStretch()
         burst_header.addWidget(self.burst_size_label)
-        fader_layout.addLayout(burst_header)
+        pattern_layout.addLayout(burst_header)
 
         self.burst_size_slider = QSlider(Qt.Orientation.Horizontal)
         self.burst_size_slider.setRange(1, 1)
@@ -518,7 +583,72 @@ class MainWindow(QMainWindow):
         self.burst_size_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.burst_size_slider.setTickInterval(1)
         self.burst_size_slider.valueChanged.connect(self._on_burst_size_changed)
-        fader_layout.addWidget(self.burst_size_slider)
+        pattern_layout.addWidget(self.burst_size_slider)
+        fader_layout.addWidget(self.pattern_controls)
+
+        self.region_controls = QWidget()
+        region_layout = QVBoxLayout(self.region_controls)
+        region_layout.setContentsMargins(0, 0, 0, 0)
+        region_layout.setSpacing(6)
+
+        region_source_header = QHBoxLayout()
+        region_source_title = QLabel("B SOURCE POSITION")
+        region_source_title.setObjectName("sectionTitle")
+        self.region_source_label = QLabel("Chunk 1")
+        self.region_source_label.setObjectName("settingValue")
+        region_source_header.addWidget(region_source_title)
+        region_source_header.addStretch()
+        region_source_header.addWidget(self.region_source_label)
+        region_layout.addLayout(region_source_header)
+        self.region_source_slider = QSlider(Qt.Orientation.Horizontal)
+        self.region_source_slider.setRange(1, 1)
+        self.region_source_slider.setEnabled(False)
+        self.region_source_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.region_source_slider.setTickInterval(1)
+        self.region_source_slider.valueChanged.connect(
+            self._on_region_source_changed
+        )
+        region_layout.addWidget(self.region_source_slider)
+
+        region_length_header = QHBoxLayout()
+        region_length_title = QLabel("REGION LENGTH")
+        region_length_title.setObjectName("sectionTitle")
+        self.region_length_label = QLabel("1 chunk")
+        self.region_length_label.setObjectName("settingValue")
+        region_length_header.addWidget(region_length_title)
+        region_length_header.addStretch()
+        region_length_header.addWidget(self.region_length_label)
+        region_layout.addLayout(region_length_header)
+        self.region_length_slider = QSlider(Qt.Orientation.Horizontal)
+        self.region_length_slider.setRange(1, 1)
+        self.region_length_slider.setEnabled(False)
+        self.region_length_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.region_length_slider.setTickInterval(1)
+        self.region_length_slider.valueChanged.connect(
+            self._on_region_length_changed
+        )
+        region_layout.addWidget(self.region_length_slider)
+
+        region_output_header = QHBoxLayout()
+        region_output_title = QLabel("OUTPUT POSITION")
+        region_output_title.setObjectName("sectionTitle")
+        self.region_output_label = QLabel("Chunk 1")
+        self.region_output_label.setObjectName("settingValue")
+        region_output_header.addWidget(region_output_title)
+        region_output_header.addStretch()
+        region_output_header.addWidget(self.region_output_label)
+        region_layout.addLayout(region_output_header)
+        self.region_output_slider = QSlider(Qt.Orientation.Horizontal)
+        self.region_output_slider.setRange(1, 1)
+        self.region_output_slider.setEnabled(False)
+        self.region_output_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.region_output_slider.setTickInterval(1)
+        self.region_output_slider.valueChanged.connect(
+            self._on_region_output_changed
+        )
+        region_layout.addWidget(self.region_output_slider)
+        self.region_controls.setVisible(False)
+        fader_layout.addWidget(self.region_controls)
 
         chunk_header = QHBoxLayout()
         chunk_title = QLabel("CHUNK DURATION")
@@ -656,6 +786,10 @@ class MainWindow(QMainWindow):
                 color: #c4c8d2; background: #303541; border: 1px solid #434956;
                 border-radius: 4px; padding: 3px 6px; font-weight: 600;
             }
+            QComboBox {
+                color: #c4c8d2; background: #303541; border: 1px solid #434956;
+                border-radius: 4px; padding: 4px 8px; font-weight: 600;
+            }
             QLabel#previewDetail { color: #858c9b; font-size: 11px; }
             QLabel#timeLabel { color: #b8bdc9; }
             QPushButton {
@@ -709,7 +843,33 @@ class MainWindow(QMainWindow):
         capacity = self.crossfader.maximum()
         self._fill = value / capacity if capacity > 0 else 0.0
         self.mix_label.setText(f"{value} / {capacity} occurrences")
-        self.interleave_timeline.set_pattern(self._pattern())
+        if self._mode == "pattern":
+            self.interleave_timeline.set_settings(self._settings())
+
+    def _on_mode_changed(self, index: int) -> None:
+        self._mode = str(self.mode_selector.itemData(index))
+        self.pattern_controls.setVisible(self._mode == "pattern")
+        self.region_controls.setVisible(self._mode == "region")
+        self._sync_region_controls()
+        self.interleave_timeline.set_settings(self._settings())
+
+    def _on_region_source_changed(self, chunk_number: int) -> None:
+        self._region_b_source_slot = chunk_number - 1
+        self.region_source_label.setText(f"Chunk {chunk_number}")
+        if self._mode == "region":
+            self.interleave_timeline.set_settings(self._settings())
+
+    def _on_region_length_changed(self, chunks: int) -> None:
+        self._region_length_slots = chunks
+        self._sync_region_controls()
+        if self._mode == "region":
+            self.interleave_timeline.set_settings(self._settings())
+
+    def _on_region_output_changed(self, chunk_number: int) -> None:
+        self._region_output_slot = chunk_number - 1
+        self.region_output_label.setText(f"Chunk {chunk_number}")
+        if self._mode == "region":
+            self.interleave_timeline.set_settings(self._settings())
 
     def _on_start_source_changed(self, starts_with_b: bool) -> None:
         self._starts_with = "B" if starts_with_b else "A"
@@ -735,9 +895,20 @@ class MainWindow(QMainWindow):
             b_chunks_per_occurrence=self._b_chunks_per_occurrence,
         )
 
+    def _region(self) -> RegionInsert:
+        return RegionInsert(
+            b_source_slot=self._region_b_source_slot,
+            output_slot=self._region_output_slot,
+            length_slots=self._region_length_slots,
+        )
+
+    def _settings(self) -> InterleaveSettings:
+        return self._region() if self._mode == "region" else self._pattern()
+
     def _pattern_changed(self) -> None:
         self._sync_occurrence_control()
-        self.interleave_timeline.set_pattern(self._pattern())
+        if self._mode == "pattern":
+            self.interleave_timeline.set_settings(self._settings())
 
     def _on_chunk_duration_changed(self, value: int) -> None:
         self.chunk_duration_slider.blockSignals(True)
@@ -789,8 +960,9 @@ class MainWindow(QMainWindow):
         else:
             self.status_label.setText("Load the other WAV file to begin.")
         self._sync_pattern_controls()
+        self._sync_region_controls()
         self.interleave_timeline.set_engine(self._engine)
-        self.interleave_timeline.set_pattern(self._pattern())
+        self.interleave_timeline.set_settings(self._settings())
         self._update_time(0.0)
         self._refresh_actions()
 
@@ -855,6 +1027,56 @@ class MainWindow(QMainWindow):
             self._fill = 0.0
             self.mix_label.setText("No occurrences")
 
+    def _sync_region_controls(self) -> None:
+        controls = (
+            self.region_source_slider,
+            self.region_length_slider,
+            self.region_output_slider,
+        )
+        for control in controls:
+            control.blockSignals(True)
+
+        if self._engine is None:
+            self._region_b_source_slot = 0
+            self._region_output_slot = 0
+            self._region_length_slots = 1
+            for control in controls:
+                control.setRange(1, 1)
+                control.setValue(1)
+                control.setEnabled(False)
+        else:
+            source_chunks = self._engine.source_chunk_count("B")
+            output_chunks = self._engine.slot_count
+            self._region_length_slots = min(
+                max(1, self._region_length_slots), source_chunks
+            )
+            max_source_start = max(0, source_chunks - self._region_length_slots)
+            self._region_b_source_slot = min(
+                max(0, self._region_b_source_slot), max_source_start
+            )
+            self._region_output_slot = min(
+                max(0, self._region_output_slot), output_chunks - 1
+            )
+            self.region_source_slider.setRange(1, max_source_start + 1)
+            self.region_source_slider.setValue(self._region_b_source_slot + 1)
+            self.region_length_slider.setRange(1, source_chunks)
+            self.region_length_slider.setValue(self._region_length_slots)
+            self.region_output_slider.setRange(1, output_chunks)
+            self.region_output_slider.setValue(self._region_output_slot + 1)
+            for control in controls:
+                control.setEnabled(True)
+
+        self.region_source_label.setText(
+            f"Chunk {self._region_b_source_slot + 1}"
+        )
+        chunk_word = "chunk" if self._region_length_slots == 1 else "chunks"
+        self.region_length_label.setText(
+            f"{self._region_length_slots} {chunk_word}"
+        )
+        self.region_output_label.setText(f"Chunk {self._region_output_slot + 1}")
+        for control in controls:
+            control.blockSignals(False)
+
     def _on_loop_changed(self, checked: bool) -> None:
         self._loop = checked
 
@@ -866,10 +1088,10 @@ class MainWindow(QMainWindow):
             return
         self.progress.setValue(0)
         self._update_time(0.0)
-        if self._playback.start(self._engine, self._pattern, lambda: self._loop):
+        if self._playback.start(self._engine, self._settings, lambda: self._loop):
             self.play_button.setText("Stop")
             self.status_label.setText(
-                f"Playing • pattern changes apply at the next "
+                f"Playing • interleave changes apply at the next "
                 f"{self._chunk_ms} ms boundary"
             )
 
@@ -924,12 +1146,12 @@ class MainWindow(QMainWindow):
 
         self._stop_playback(wait=True, reset=True)
         engine = self._engine
-        snapshot = self._pattern()
+        snapshot = self._settings()
         self._export_cancel.clear()
         self._exporting = True
         self.progress.setValue(0)
         self.status_label.setText(
-            f"Exporting pattern at {round(snapshot.fill * 100)}% occurrence fill…"
+            "Exporting current interleave settings…"
         )
         self._refresh_actions()
 
@@ -942,11 +1164,11 @@ class MainWindow(QMainWindow):
         self._export_thread.start()
 
     def _render_export(
-        self, engine: AudioEngine, pattern: InterleavePattern, output_path: Path
+        self, engine: AudioEngine, settings: InterleaveSettings, output_path: Path
     ) -> None:
         try:
             rendered = engine.render(
-                pattern,
+                settings,
                 progress=lambda value: self._signals.export_progress.emit(round(value * 1000)),
                 cancel_event=self._export_cancel,
             )

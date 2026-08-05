@@ -4,7 +4,12 @@ import threading
 
 import numpy as np
 
-from audio_interleaver.audio import AudioEngine, InterleavePattern, LoadedAudio
+from audio_interleaver.audio import (
+    AudioEngine,
+    InterleavePattern,
+    LoadedAudio,
+    RegionInsert,
+)
 from audio_interleaver.playback import PlaybackController
 
 
@@ -90,3 +95,34 @@ def test_loop_replays_the_complete_result(monkeypatch):
     np.testing.assert_allclose(writes[1], writes[3])
     assert positions == [0.36, 0.72, 0.0, 0.36, 0.72]
     assert natural == [True]
+
+
+def test_region_insert_playback_uses_selected_b_source_window(monkeypatch):
+    FakeOutputStream.instances.clear()
+    monkeypatch.setattr("audio_interleaver.playback.sd.OutputStream", FakeOutputStream)
+    source_a = LoadedAudio(
+        np.repeat(np.array((0.1, 0.2, 0.3), dtype=np.float32), 100)[:, None],
+        1000,
+    )
+    source_b = LoadedAudio(
+        np.repeat(np.array((0.6, 0.7, 0.8), dtype=np.float32), 100)[:, None],
+        1000,
+    )
+    engine = AudioEngine(source_a, source_b, slot_ms=100, smoothing_ms=0)
+    finished = threading.Event()
+    controller = PlaybackController(
+        on_position=lambda _position: None,
+        on_finished=lambda _natural: finished.set(),
+        on_error=lambda _message: None,
+    )
+
+    assert controller.start(
+        engine,
+        lambda: RegionInsert(b_source_slot=1, output_slot=1, length_slots=1),
+    )
+    assert finished.wait(2)
+
+    writes = FakeOutputStream.instances[-1].writes
+    np.testing.assert_allclose(writes[0], 0.1)
+    np.testing.assert_allclose(writes[1], 0.7)
+    np.testing.assert_allclose(writes[2], 0.3)

@@ -9,6 +9,7 @@ from audio_interleaver.audio import (
     AudioError,
     InterleavePattern,
     LoadedAudio,
+    RegionInsert,
     load_wav,
     occurrence_capacity,
     select_source,
@@ -114,6 +115,34 @@ def test_center_uses_each_sources_sequential_chunks():
     np.testing.assert_allclose(rendered[1000:], 0.0)
 
 
+def test_first_inserted_b_slot_starts_with_b_chunk_zero():
+    source_a = audio(np.zeros(2160, dtype=np.float32))
+    source_b = audio(np.arange(2160, dtype=np.float32) / 10000)
+    engine = AudioEngine(source_a, source_b, smoothing_ms=0)
+    pattern = InterleavePattern(fill=1.0, first_alternate_slot=3)
+
+    rendered = engine.render(pattern)[:, 0]
+
+    np.testing.assert_allclose(rendered[1080:1440], source_b.samples[:360, 0])
+
+
+def test_source_shorter_than_a_chunk_restarts_and_silence_pads_each_occurrence():
+    short_source = audio(np.linspace(0.1, 0.5, 100, dtype=np.float32))
+    engine = AudioEngine(
+        short_source,
+        audio(np.zeros(720, dtype=np.float32)),
+        smoothing_ms=0,
+    )
+
+    rendered = engine.render(InterleavePattern(fill=0.0))[:, 0]
+
+    for slot_start in (0, 360):
+        np.testing.assert_allclose(
+            rendered[slot_start : slot_start + 100], short_source.samples[:, 0]
+        )
+        np.testing.assert_allclose(rendered[slot_start + 100 : slot_start + 360], 0.0)
+
+
 def test_zero_fill_selects_only_source_a():
     source_a = audio(np.full(900, -0.25))
     source_b = audio(np.full(900, 0.75))
@@ -124,7 +153,7 @@ def test_zero_fill_selects_only_source_a():
     np.testing.assert_allclose(rendered[900:], 0.0)
 
 
-def test_shorter_source_loops_until_longer_source_ends():
+def test_shorter_source_loops_as_complete_silence_padded_chunks():
     source_a = audio(np.arange(500, dtype=np.float32) / 1000)
     source_b = audio(np.zeros(1200, dtype=np.float32))
     engine = AudioEngine(source_a, source_b)
@@ -132,10 +161,33 @@ def test_shorter_source_loops_until_longer_source_ends():
     rendered = engine.render(InterleavePattern(fill=0.0))[:, 0]
 
     assert len(rendered) == 1440
-    np.testing.assert_allclose(rendered[:500], source_a.samples[:, 0])
-    np.testing.assert_allclose(rendered[500:1000], source_a.samples[:, 0])
-    np.testing.assert_allclose(rendered[1000:1200], source_a.samples[:200, 0])
+    np.testing.assert_allclose(rendered[:360], source_a.samples[:360, 0])
+    np.testing.assert_allclose(rendered[360:500], source_a.samples[360:, 0])
+    np.testing.assert_allclose(rendered[500:720], 0.0)
+    np.testing.assert_allclose(rendered[720:1080], source_a.samples[:360, 0])
+    np.testing.assert_allclose(rendered[1080:1200], source_a.samples[360:480, 0])
     np.testing.assert_allclose(rendered[1200:], 0.0)
+
+
+def test_region_insert_uses_independent_b_source_and_output_positions():
+    chunk_values_a = np.repeat(np.arange(6, dtype=np.float32), 100)
+    chunk_values_b = np.repeat(np.arange(10, 16, dtype=np.float32), 100)
+    engine = AudioEngine(
+        audio(chunk_values_a),
+        audio(chunk_values_b),
+        slot_ms=100,
+        smoothing_ms=0,
+    )
+    settings = RegionInsert(b_source_slot=2, output_slot=1, length_slots=3)
+
+    rendered = engine.render(settings)[:, 0].reshape(6, 100)
+
+    np.testing.assert_allclose(rendered[:, 0], [0, 12, 13, 14, 4, 5])
+
+
+def test_region_insert_is_clipped_only_by_the_output_timeline():
+    settings = RegionInsert(b_source_slot=0, output_slot=4, length_slots=3)
+    assert "".join(select_source(index, 6, settings) for index in range(6)) == "AAAABB"
 
 
 def test_final_partial_slot_is_preserved_and_padded_with_silence():
