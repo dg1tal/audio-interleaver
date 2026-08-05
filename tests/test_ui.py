@@ -181,3 +181,12 @@ def test_duration_sliders_and_numeric_inputs_stay_synchronized(qtbot):
     window.chunk_duration_slider.setValue(300)
     assert window.crossfade_duration_slider.value() == 7
     assert window.chunk_duration_input.value() == 300
+
+
+def test_duration_controls_are_arranged_side_by_side(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    layout = window.duration_controls.layout()
+    assert layout.itemAt(0).widget() is window.chunk_duration_group
+    assert layout.itemAt(1).widget() is window.crossfade_duration_group

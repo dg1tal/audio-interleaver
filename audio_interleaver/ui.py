@@ -650,6 +650,16 @@ class MainWindow(QMainWindow):
         self.region_controls.setVisible(False)
         fader_layout.addWidget(self.region_controls)
 
+        self.duration_controls = QWidget()
+        self.duration_controls.setObjectName("durationControls")
+        duration_controls_layout = QHBoxLayout(self.duration_controls)
+        duration_controls_layout.setContentsMargins(0, 0, 0, 0)
+        duration_controls_layout.setSpacing(18)
+
+        self.chunk_duration_group = QWidget()
+        chunk_group_layout = QVBoxLayout(self.chunk_duration_group)
+        chunk_group_layout.setContentsMargins(0, 0, 0, 0)
+        chunk_group_layout.setSpacing(6)
         chunk_header = QHBoxLayout()
         chunk_title = QLabel("CHUNK DURATION")
         chunk_title.setObjectName("sectionTitle")
@@ -665,8 +675,7 @@ class MainWindow(QMainWindow):
         chunk_header.addWidget(chunk_title)
         chunk_header.addStretch()
         chunk_header.addWidget(self.chunk_duration_input)
-        fader_layout.addSpacing(8)
-        fader_layout.addLayout(chunk_header)
+        chunk_group_layout.addLayout(chunk_header)
 
         self.chunk_duration_slider = QSlider(Qt.Orientation.Horizontal)
         self.chunk_duration_slider.setRange(MIN_CHUNK_MS, MAX_CHUNK_MS)
@@ -678,8 +687,12 @@ class MainWindow(QMainWindow):
         self.chunk_duration_slider.valueChanged.connect(
             self._on_chunk_duration_changed
         )
-        fader_layout.addWidget(self.chunk_duration_slider)
+        chunk_group_layout.addWidget(self.chunk_duration_slider)
 
+        self.crossfade_duration_group = QWidget()
+        crossfade_group_layout = QVBoxLayout(self.crossfade_duration_group)
+        crossfade_group_layout.setContentsMargins(0, 0, 0, 0)
+        crossfade_group_layout.setSpacing(6)
         transition_header = QHBoxLayout()
         transition_title = QLabel("CHUNK CROSSFADE")
         transition_title.setObjectName("sectionTitle")
@@ -695,7 +708,7 @@ class MainWindow(QMainWindow):
         transition_header.addWidget(transition_title)
         transition_header.addStretch()
         transition_header.addWidget(self.crossfade_duration_input)
-        fader_layout.addLayout(transition_header)
+        crossfade_group_layout.addLayout(transition_header)
 
         self.crossfade_duration_slider = QSlider(Qt.Orientation.Horizontal)
         self.crossfade_duration_slider.setRange(0, MAX_CROSSFADE_MS)
@@ -712,7 +725,12 @@ class MainWindow(QMainWindow):
         self.crossfade_duration_slider.valueChanged.connect(
             self._on_crossfade_duration_changed
         )
-        fader_layout.addWidget(self.crossfade_duration_slider)
+        crossfade_group_layout.addWidget(self.crossfade_duration_slider)
+
+        duration_controls_layout.addWidget(self.chunk_duration_group, 1)
+        duration_controls_layout.addWidget(self.crossfade_duration_group, 1)
+        fader_layout.addSpacing(8)
+        fader_layout.addWidget(self.duration_controls)
 
         preview_header = QHBoxLayout()
         preview_title = QLabel("INTERLEAVE PREVIEW")
