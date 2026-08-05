@@ -134,7 +134,7 @@ def test_restart_mode_resets_for_every_active_b_chunk():
     )
 
     engine.render_symbols(
-        RegionInsert(b_source_slot=0, output_slot=1, length_slots=2),
+        RegionInsert(b_source_ms=0, output_slot=1, length_slots=2),
         "restart_each_chunk",
     )
 
@@ -153,7 +153,7 @@ def test_region_silence_tail_encodes_zero_pcm(encoder_mode):
 
     engine.render_symbols(
         RegionInsert(
-            b_source_slot=1,
+            b_source_ms=60,
             output_slot=0,
             length_slots=4,
             silence_after_b_end=True,
@@ -168,6 +168,38 @@ def test_region_silence_tail_encodes_zero_pcm(encoder_mode):
     )
     assert np.any(b_pcm[0])
     np.testing.assert_array_equal(b_pcm[1:], 0)
+
+
+def test_region_source_position_uses_30_ms_codec_frame_steps():
+    codec = PcmRecordingCodec()
+    source_b = np.arange(2400, dtype=np.float32) / 10_000
+    engine = AcelpEngine(
+        audio(np.zeros(1920)),
+        audio(source_b),
+        slot_ms=60,
+        codec=codec,
+    )
+
+    engine.render_symbols(
+        RegionInsert(b_source_ms=30, output_slot=0, length_slots=2),
+        "one_stream",
+    )
+
+    encoded_b = codec.encoded_pcm[1]
+    expected = np.rint(source_b[240:1200] * 32767.0).astype(np.int16)
+    np.testing.assert_array_equal(encoded_b, expected)
+
+
+def test_region_source_position_rejects_subframe_acelp_offsets():
+    engine = AcelpEngine(
+        audio(np.zeros(960)),
+        audio(np.zeros(960)),
+        slot_ms=60,
+        codec=RecordingCodec(),
+    )
+
+    with pytest.raises(ValueError, match="align to 30 ms"):
+        engine.render_symbols(RegionInsert(b_source_ms=1), "one_stream")
 
 
 def test_stereo_is_averaged_and_resampled_to_codec_rate():

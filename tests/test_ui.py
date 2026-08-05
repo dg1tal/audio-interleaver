@@ -39,6 +39,15 @@ def test_window_starts_waiting_for_two_sources(qtbot):
     assert window.source_b_card.preview_button.text() == "Play preview"
     assert not window.source_a_card.preview_button.isEnabled()
     assert not window.source_b_card.preview_button.isEnabled()
+    assert window.mode_selector.currentData() == "region"
+    assert window.pattern_controls.isHidden()
+    assert not window.region_controls.isHidden()
+    assert window.region_source_label.text() == "0:00.000"
+    assert window.minimum_occurrences_label.text() == "No optional occurrences"
+    assert window.crossfader.toolTip() == (
+        "Increasing fill enables B occurrences from left to right"
+    )
+    assert window.region_output_title.text() == "INSERT POSITION IN A"
     assert window.first_alternate_title.text() == "FIRST B CHUNK POSITION"
     assert window.burst_size_label.text() == "1 chunk"
 
@@ -105,6 +114,7 @@ def test_occurrence_fill_updates_interleave_preview(qtbot):
     source = LoadedAudio(np.zeros((1080, 1), dtype=np.float32), 1000)
     window._engine = AudioEngine(source, source)
     window.interleave_timeline.set_engine(window._engine)
+    window.mode_selector.setCurrentIndex(0)
 
     window.crossfader.setValue(100)
 
@@ -118,14 +128,18 @@ def test_pattern_controls_update_preview(qtbot):
     window._source_a = source
     window._source_b = source
     window._rebuild_engine()
+    window.mode_selector.setCurrentIndex(0)
 
     window.crossfader.setValue(100)
-    window.burst_size_slider.setValue(2)
-    assert window.interleave_timeline.slot_sources == tuple("ABBABBABB")
+    assert window.interleave_timeline.slot_sources == tuple("ABABABABA")
 
     window.start_with_b_radio.setChecked(True)
     assert window.first_alternate_title.text() == "FIRST A CHUNK POSITION"
-    assert window.interleave_timeline.slot_sources == tuple("BABBABBAB")
+    assert window.interleave_timeline.slot_sources == tuple("BABABABAB")
+
+    window.burst_size_slider.setValue(2)
+    assert window.first_alternate_label.text() == "Chunk 3"
+    assert window.interleave_timeline.slot_sources == tuple("BBABBABBA")
 
     window.first_alternate_slider.setValue(4)
     assert window.interleave_timeline.slot_sources == tuple("BBBABBABB")
@@ -138,6 +152,7 @@ def test_burst_size_label_pluralizes_chunks(qtbot):
     window._source_a = source
     window._source_b = source
     window._rebuild_engine()
+    window.mode_selector.setCurrentIndex(0)
 
     assert window.burst_size_label.text() == "1 chunk"
     window.burst_size_slider.setValue(2)
@@ -151,6 +166,7 @@ def test_occurrence_fill_has_one_meaningful_step_per_occurrence(qtbot):
     window._source_a = source
     window._source_b = source
     window._rebuild_engine()
+    window.mode_selector.setCurrentIndex(0)
 
     window.burst_size_slider.setValue(2)
     assert window.crossfader.minimum() == 0
@@ -174,7 +190,7 @@ def test_region_insert_mode_controls_source_window_and_output_position(qtbot):
 
     window.mode_selector.setCurrentIndex(1)
     window.region_length_slider.setValue(3)
-    window.region_source_slider.setValue(4)
+    window.region_source_slider.setValue(1080)
     window.region_output_slider.setValue(5)
 
     assert window.pattern_controls.isHidden()
@@ -182,8 +198,9 @@ def test_region_insert_mode_controls_source_window_and_output_position(qtbot):
     assert not window.region_preview_button.isHidden()
     assert window.region_preview_button.isEnabled()
     assert window._settings() == RegionInsert(
-        b_source_slot=3, output_slot=4, length_slots=3
+        b_source_ms=1080, output_slot=4, length_slots=3
     )
+    assert window.region_source_label.text() == "0:01.080"
     assert window.interleave_timeline.slot_sources == tuple("AAAABBBAA")
     assert window.interleave_timeline.waveform_chunk_indices("B") == (
         None,
@@ -216,13 +233,13 @@ def test_region_silence_checkbox_extends_length_without_adding_a_row(qtbot):
 
     window.region_output_slider.setValue(3)
     window.region_silence_checkbox.setChecked(True)
-    window.region_source_slider.setValue(3)
+    window.region_source_slider.setValue(200)
     window.region_length_slider.setValue(7)
 
     assert window.region_controls.sizeHint().height() == region_height
     assert window.region_length_slider.maximum() == 7
     assert window._settings() == RegionInsert(
-        b_source_slot=2,
+        b_source_ms=200,
         output_slot=2,
         length_slots=7,
         silence_after_b_end=True,
@@ -246,7 +263,7 @@ def test_region_silence_checkbox_extends_length_without_adding_a_row(qtbot):
 
     window.region_silence_checkbox.setChecked(False)
     assert window.region_length_slider.maximum() == 3
-    assert window.region_source_slider.maximum() == 1
+    assert window.region_source_slider.maximum() == 0
 
 
 def test_duration_sliders_and_numeric_inputs_stay_synchronized(qtbot):
@@ -318,6 +335,10 @@ def test_acelp_stage_uses_legal_frame_duration_positions(qtbot):
         "Continuous A encode → insert B symbols → continuous mixed decode"
     )
     assert not window.symbol_export_button.isHidden()
+
+    window.region_source_slider.setValue(1)
+    assert window.region_source_label.text() == "0:00.030"
+    assert window._settings() == RegionInsert(b_source_ms=30)
 
     window.restart_chunk_radio.setChecked(True)
     assert window._b_encoder_mode == "restart_each_chunk"
@@ -407,7 +428,8 @@ def test_region_preview_plays_selected_chunk_fitted_b_portion(qtbot):
     window.mode_selector.setCurrentIndex(1)
     window.chunk_duration_input.setValue(100)
     window.region_length_slider.setValue(2)
-    window.region_source_slider.setValue(4)
+    window.region_silence_checkbox.setChecked(True)
+    window.region_source_slider.setValue(325)
     preview = FakePreviewPlayback()
     window._preview_playback = preview
 
@@ -417,7 +439,7 @@ def test_region_preview_plays_selected_chunk_fitted_b_portion(qtbot):
     assert preview_id == "region-B"
     assert preview_audio.frames == 200
     np.testing.assert_allclose(
-        preview_audio.samples[:150, 0], np.arange(300, 450, dtype=np.float32)
+        preview_audio.samples[:125, 0], np.arange(325, 450, dtype=np.float32)
     )
-    np.testing.assert_allclose(preview_audio.samples[150:, 0], 0.0)
+    np.testing.assert_allclose(preview_audio.samples[125:, 0], 0.0)
     assert window.region_preview_button.text() == "Stop B region"

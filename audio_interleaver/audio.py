@@ -112,14 +112,14 @@ class InterleavePattern:
 class RegionInsert:
     """A contiguous window from source B placed into the A output timeline."""
 
-    b_source_slot: int = 0
+    b_source_ms: int = 0
     output_slot: int = 0
     length_slots: int = 1
     silence_after_b_end: bool = False
 
     def __post_init__(self) -> None:
-        if self.b_source_slot < 0:
-            raise ValueError("b_source_slot must be non-negative")
+        if self.b_source_ms < 0:
+            raise ValueError("b_source_ms must be non-negative")
         if self.output_slot < 0:
             raise ValueError("output_slot must be non-negative")
         if self.length_slots < 1:
@@ -161,7 +161,14 @@ def select_source(
         return "A"
 
     pattern = settings
-    first_alternate = min(pattern.first_alternate_slot, slot_count)
+    minimum_prefix = (
+        pattern.b_chunks_per_occurrence
+        if pattern.starts_with == "B"
+        else 1
+    )
+    first_alternate = min(
+        max(pattern.first_alternate_slot, minimum_prefix), slot_count
+    )
     if slot_index < first_alternate:
         return pattern.starts_with
 
@@ -280,7 +287,9 @@ class AudioEngine:
         selected_source = source_id or self.source_for_slot(slot_index, settings)
         if isinstance(settings, RegionInsert):
             if selected_source == "B":
-                return settings.b_source_slot + (slot_index - settings.output_slot)
+                return self.source_start_frame_for_slot(
+                    slot_index, settings, selected_source
+                ) // self.slot_frames
             return slot_index
         if selected_source == "A":
             # A is the fixed output timeline. Inserting B replaces an A chunk;
@@ -290,6 +299,27 @@ class AudioEngine:
             self.source_for_slot(index, settings) == selected_source
             for index in range(slot_index)
         )
+
+    def source_start_frame_for_slot(
+        self,
+        slot_index: int,
+        settings: InterleaveSettings,
+        source_id: SourceId | None = None,
+    ) -> int:
+        """Return the first source frame used by an output slot."""
+
+        selected_source = source_id or self.source_for_slot(slot_index, settings)
+        if isinstance(settings, RegionInsert) and selected_source == "B":
+            region_start = round(self.sample_rate * settings.b_source_ms / 1000.0)
+            return (
+                region_start
+                + (slot_index - settings.output_slot) * self.slot_frames
+            )
+        chunk_index = self.source_chunk_index_for_slot(
+            slot_index, settings, selected_source
+        )
+        actual_chunk = chunk_index % self.source_chunk_count(selected_source)
+        return actual_chunk * self.slot_frames
 
     def _source(self, source_id: SourceId) -> LoadedAudio:
         return self.source_a if source_id == "A" else self.source_b
@@ -328,34 +358,59 @@ class AudioEngine:
             result[content_end:] = 0.0
         return result
 
+    def preview_source_frames(
+        self,
+        source_id: SourceId,
+        source_start_frame: int,
+        output_slot_index: int,
+    ) -> np.ndarray:
+        """Return a source window as it appears in an output preview slot."""
+
+        if output_slot_index < 0 or output_slot_index >= self.slot_count:
+            raise IndexError("output_slot_index is outside the output timeline")
+        if source_start_frame < 0:
+            raise ValueError("source_start_frame must be non-negative")
+        source = self._source(source_id).samples
+        result = np.zeros((self.slot_frames, self.channels), dtype=np.float32)
+        copied = min(self.slot_frames, max(0, len(source) - source_start_frame))
+        if copied:
+            result[:copied] = source[
+                source_start_frame : source_start_frame + copied
+            ]
+        output_start = output_slot_index * self.slot_frames
+        content_end = min(
+            self.slot_frames, max(0, self.content_frames - output_start)
+        )
+        if content_end < self.slot_frames:
+            result[content_end:] = 0.0
+        return result
+
     def source_region(
         self,
         source_id: SourceId,
-        first_chunk: int,
+        source_start_ms: int,
         chunk_count: int,
         silence_after_end: bool = False,
     ) -> np.ndarray:
-        """Return a whole-chunk source selection, padding its final chunk."""
+        """Return a continuous source selection, padding its final chunk."""
 
-        if first_chunk < 0:
-            raise ValueError("first_chunk must be non-negative")
+        if source_start_ms < 0:
+            raise ValueError("source_start_ms must be non-negative")
         if chunk_count < 1:
             raise ValueError("chunk_count must be positive")
-        if (
-            not silence_after_end
-            and first_chunk + chunk_count > self.source_chunk_count(source_id)
-        ):
+        source_start_frame = round(self.sample_rate * source_start_ms / 1000.0)
+        source = self._source(source_id).samples
+        length = chunk_count * self.slot_frames
+        padded_end = self.source_chunk_count(source_id) * self.slot_frames
+        if not silence_after_end and source_start_frame + length > padded_end:
             raise ValueError("source region extends beyond the available chunks")
-        return np.concatenate(
-            [
-                np.zeros((self.slot_frames, self.channels), dtype=np.float32)
-                if first_chunk + offset >= self.source_chunk_count(source_id)
-                else self._chunk(
-                    source_id, first_chunk + offset, self.slot_frames
-                )
-                for offset in range(chunk_count)
+        result = np.zeros((length, self.channels), dtype=np.float32)
+        copied = min(length, max(0, len(source) - source_start_frame))
+        if copied:
+            result[:copied] = source[
+                source_start_frame : source_start_frame + copied
             ]
-        )
+        return result
 
     def render_slot(
         self,
@@ -372,22 +427,16 @@ class AudioEngine:
         start = slot_index * self.slot_frames
         length = min(self.slot_frames, self.total_frames - start)
         source_id = self.source_for_slot(slot_index, settings)
-        if source_chunk_index is None:
-            source_chunk_index = self.source_chunk_index_for_slot(
+        if source_chunk_index is not None:
+            source_start_frame = source_chunk_index * self.slot_frames
+        else:
+            source_start_frame = self.source_start_frame_for_slot(
                 slot_index, settings, source_id
             )
-        if source_chunk_index < 0:
-            raise ValueError("source_chunk_index must be non-negative")
-        silent_b_tail = (
-            source_id == "B"
-            and isinstance(settings, RegionInsert)
-            and settings.silence_after_b_end
-            and source_chunk_index >= self.source_chunk_count("B")
-        )
-        result = (
-            np.zeros((self.slot_frames, self.channels), dtype=np.float32)
-            if silent_b_tail
-            else self.preview_chunk(source_id, source_chunk_index, slot_index)
+        if source_start_frame < 0:
+            raise ValueError("source start must be non-negative")
+        result = self.preview_source_frames(
+            source_id, source_start_frame, slot_index
         )
 
         fade_length = min(
@@ -426,13 +475,10 @@ class AudioEngine:
             if cancel_event is not None and cancel_event.is_set():
                 raise RenderingCancelled("Rendering was cancelled.")
             source_id = self.source_for_slot(slot_index, settings)
-            source_chunk_index = self.source_chunk_index_for_slot(
-                slot_index, settings, source_id
-            )
             slot, previous_source = self.render_slot(
                 slot_index,
                 settings,
-                source_chunk_index,
+                None,
                 previous_source,
                 previous_chunk,
             )

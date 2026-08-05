@@ -12,17 +12,30 @@ Two processing stages are available:
   mixed stream continuously. It does not simulate TETRA channel coding or radio
   interleaving.
 
+## Interface
+
+The default Region Insert workflow selects a continuous section of source B
+and places it into a chunk-aligned window on the source-A timeline.
+
+![Audio Interleaver showing a Region Insert configuration](docs/audio-interleaver.png)
+
 ## Interleave modes
+
+**Region Insert** is the default mode. It replaces a chunk-aligned window of A
+with a continuous region from B. **Insert position in A** and **Region length**
+set the replacement window in whole chunks. **B source position** independently
+sets where the inserted audio begins within B: Raw mode moves in 1 ms steps,
+while ACELP mode moves in 30 ms codec-frame steps. This finer source position
+does not change the chunk boundaries of the output window.
+
+Enable **Add silence after B ends** to extend the selected window beyond the
+end of B. The remaining part of the inserted region contains silence instead
+of wrapped B audio.
 
 **Pattern Interleave** creates a repeating A/B pattern. Controls select the
 starting source, first alternate-source chunk, B burst size, and number of
 active B occurrences. Source A stays fixed on the output timeline; selected B
 chunks advance in order.
-
-**Region Insert** replaces a contiguous part of A with a selected region of B.
-Controls set the B source position, region length, and output position. Enable
-**Add silence after B ends** to extend the region past the end of B. The
-remaining selected chunks contain silence instead of wrapped B audio.
 
 The timeline shows both source waveforms, selected chunks, and playback
 position. **Preview B region** plays the current Region Insert selection.
@@ -30,8 +43,9 @@ position. **Preview B region** plays the current Region Insert selection.
 ## Audio behavior
 
 Raw chunk duration ranges from 50 to 2,000 ms. An optional 0–50 ms equal-power
-crossfade is applied when the selected source changes. Short sources loop by
-whole chunks; partial chunks are padded with silence.
+crossfade is applied when the selected source changes. In Pattern Interleave,
+short sources loop by whole chunks. Partial final chunks and Region Insert
+windows extending beyond available B audio are padded with silence.
 
 ACELP audio is mono at 8 kHz and uses 30 ms frames. Chunk durations therefore
 range from 30 to 1,980 ms in 30 ms steps. Typed values snap to the nearest legal
@@ -103,10 +117,11 @@ builds the native TETRA ACELP extension.
 python -m audio_interleaver
 ```
 
-Load both sources, choose a processing stage and interleave mode, configure the
-chunk settings, then play or export the result. Source preview buttons play the
-original WAV files. ACELP settings are locked while a result is being prepared
-or played.
+Load both sources, choose a processing stage, and configure the default Region
+Insert window. Switch to Pattern Interleave when a repeating replacement
+pattern is needed. Then play or export the result. Source preview buttons play
+the original WAV files. ACELP settings are locked while a result is being
+prepared or played.
 
 The window displays the current Git commit. Packaged builds can set it with the
 `AUDIO_INTERLEAVER_COMMIT` environment variable.

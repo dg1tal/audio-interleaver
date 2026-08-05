@@ -79,6 +79,15 @@ def _format_time(seconds: float) -> str:
     return f"{minutes:d}:{remainder:02d}"
 
 
+def _format_position_ms(milliseconds: int) -> str:
+    total_minutes, remainder_ms = divmod(max(0, milliseconds), 60_000)
+    hours, minutes = divmod(total_minutes, 60)
+    seconds, milliseconds = divmod(remainder_ms, 1000)
+    if hours:
+        return f"{hours:d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+    return f"{minutes:d}:{seconds:02d}.{milliseconds:03d}"
+
+
 def _format_chunk_count(count: int) -> str:
     chunk_word = "chunk" if count == 1 else "chunks"
     return f"{count} {chunk_word}"
@@ -178,6 +187,9 @@ class InterleaveTimeline(QWidget):
         self._waveform_chunk_indices: dict[
             SourceId, tuple[int | None, ...]
         ] = {"A": (), "B": ()}
+        self._waveform_start_frames: dict[
+            SourceId, tuple[int | None, ...]
+        ] = {"A": (), "B": ()}
         self.setMinimumHeight(116)
         self.setSizePolicy(
             self.sizePolicy().horizontalPolicy(),
@@ -200,6 +212,11 @@ class InterleaveTimeline(QWidget):
         self, source_id: SourceId
     ) -> tuple[int | None, ...]:
         return self._waveform_chunk_indices[source_id]
+
+    def waveform_start_frames(
+        self, source_id: SourceId
+    ) -> tuple[int | None, ...]:
+        return self._waveform_start_frames[source_id]
 
     def sizeHint(self) -> QSize:
         return QSize(640, 116)
@@ -224,46 +241,47 @@ class InterleaveTimeline(QWidget):
         if self._engine is None:
             self._slot_sources = ()
             self._waveform_chunk_indices = {"A": (), "B": ()}
+            self._waveform_start_frames = {"A": (), "B": ()}
         else:
             self._slot_sources = tuple(
                 self._engine.source_for_slot(index, self._settings)
                 for index in range(self._engine.slot_count)
             )
+            start_frames: dict[SourceId, list[int | None]] = {"A": [], "B": []}
             chunk_indices: dict[SourceId, list[int | None]] = {"A": [], "B": []}
-            if isinstance(self._settings, RegionInsert):
-                for index, selected_source in enumerate(self._slot_sources):
-                    chunk_indices["A"].append(index)
-                    b_chunk_index = (
-                        self._engine.source_chunk_index_for_slot(
-                            index, self._settings, "B"
-                        )
-                        if selected_source == "B"
-                        else None
+            for index, selected_source in enumerate(self._slot_sources):
+                a_start = self._engine.source_start_frame_for_slot(
+                    index, self._settings, "A"
+                )
+                start_frames["A"].append(a_start)
+                chunk_indices["A"].append(a_start // self._engine.slot_frames)
+                b_start = (
+                    self._engine.source_start_frame_for_slot(
+                        index, self._settings, "B"
                     )
-                    silent_b_tail = (
-                        self._settings.silence_after_b_end
-                        and b_chunk_index is not None
-                        and b_chunk_index
-                        >= self._engine.source_chunk_count("B")
-                    )
-                    chunk_indices["B"].append(
-                        b_chunk_index
-                        if selected_source == "B" and not silent_b_tail
-                        else None
-                    )
-            else:
-                for index, selected_source in enumerate(self._slot_sources):
-                    chunk_indices["A"].append(index)
-                    chunk_indices["B"].append(
-                        self._engine.source_chunk_index_for_slot(
-                            index, self._settings, "B"
-                        )
-                        if selected_source == "B"
-                        else None
-                    )
+                    if selected_source == "B"
+                    else None
+                )
+                if (
+                    b_start is not None
+                    and isinstance(self._settings, RegionInsert)
+                    and self._settings.silence_after_b_end
+                    and b_start >= self._engine.source_b.frames
+                ):
+                    b_start = None
+                start_frames["B"].append(b_start)
+                chunk_indices["B"].append(
+                    b_start // self._engine.slot_frames
+                    if b_start is not None
+                    else None
+                )
             self._waveform_chunk_indices = {
                 "A": tuple(chunk_indices["A"]),
                 "B": tuple(chunk_indices["B"]),
+            }
+            self._waveform_start_frames = {
+                "A": tuple(start_frames["A"]),
+                "B": tuple(start_frames["B"]),
             }
         self.update()
 
@@ -371,13 +389,13 @@ class InterleaveTimeline(QWidget):
                     ("A", waveform_a, QColor(SOURCE_A_COLOR)),
                     ("B", waveform_b, QColor(SOURCE_B_COLOR)),
                 ):
-                    chunk_index = self._waveform_chunk_indices[waveform_source][
+                    source_start_frame = self._waveform_start_frames[waveform_source][
                         index
                     ]
-                    if chunk_index is None:
+                    if source_start_frame is None:
                         continue
-                    chunk = self._engine.preview_chunk(
-                        waveform_source, chunk_index, index
+                    chunk = self._engine.preview_source_frames(
+                        waveform_source, source_start_frame, index
                     )
                     chunk_rect = QRectF(
                         x1,
@@ -450,12 +468,12 @@ class MainWindow(QMainWindow):
         self._engine: AudioEngine | AcelpEngine | None = None
         self._stage: ProcessingStage = "raw"
         self._b_encoder_mode: BEncoderMode = "one_stream"
-        self._mode = "pattern"
+        self._mode = "region"
         self._fill = 0.5
         self._starts_with: SourceId = "A"
         self._first_alternate_slot = 1
         self._b_chunks_per_occurrence = 1
-        self._region_b_source_slot = 0
+        self._region_b_source_ms = 0
         self._region_output_slot = 0
         self._region_length_slots = 1
         self._region_silence_after_b_end = False
@@ -631,6 +649,7 @@ class MainWindow(QMainWindow):
         self.mode_selector = QComboBox()
         self.mode_selector.addItem("Pattern Interleave", "pattern")
         self.mode_selector.addItem("Region Insert", "region")
+        self.mode_selector.setCurrentIndex(1)
         self.mode_selector.currentIndexChanged.connect(self._on_mode_changed)
         mode_header.addWidget(mode_title)
         mode_header.addStretch()
@@ -659,14 +678,16 @@ class MainWindow(QMainWindow):
         self.crossfader.setSingleStep(1)
         self.crossfader.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.crossfader.setTickInterval(1)
+        self.crossfader.setToolTip(
+            "Increasing fill enables B occurrences from left to right"
+        )
         self.crossfader.valueChanged.connect(self._on_crossfader_changed)
         pattern_layout.addWidget(self.crossfader)
 
         fader_labels = QHBoxLayout()
-        fader_labels.addWidget(QLabel("Minimum pattern"))
-        center_label = QLabel("Reveal left to right")
-        center_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        fader_labels.addWidget(center_label, 1)
+        self.minimum_occurrences_label = QLabel("No optional occurrences")
+        fader_labels.addWidget(self.minimum_occurrences_label)
+        fader_labels.addStretch()
         right_label = QLabel("All occurrences")
         right_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         fader_labels.addWidget(right_label)
@@ -736,6 +757,7 @@ class MainWindow(QMainWindow):
         self.burst_size_slider.setTickInterval(1)
         self.burst_size_slider.valueChanged.connect(self._on_burst_size_changed)
         pattern_layout.addWidget(self.burst_size_slider)
+        self.pattern_controls.setVisible(False)
         fader_layout.addWidget(self.pattern_controls)
 
         self.region_controls = QWidget()
@@ -746,17 +768,21 @@ class MainWindow(QMainWindow):
         region_source_header = QHBoxLayout()
         region_source_title = QLabel("B SOURCE POSITION")
         region_source_title.setObjectName("sectionTitle")
-        self.region_source_label = QLabel("Chunk 1")
+        self.region_source_label = QLabel(_format_position_ms(0))
         self.region_source_label.setObjectName("settingValue")
         region_source_header.addWidget(region_source_title)
         region_source_header.addStretch()
         region_source_header.addWidget(self.region_source_label)
         region_layout.addLayout(region_source_header)
         self.region_source_slider = QSlider(Qt.Orientation.Horizontal)
-        self.region_source_slider.setRange(1, 1)
+        self.region_source_slider.setRange(0, 0)
         self.region_source_slider.setEnabled(False)
         self.region_source_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.region_source_slider.setTickInterval(1)
+        self.region_source_slider.setToolTip(
+            "Start of the continuous B selection: 1 ms steps in Raw mode, "
+            "30 ms codec-frame steps in ACELP mode"
+        )
         self.region_source_slider.valueChanged.connect(
             self._on_region_source_changed
         )
@@ -789,11 +815,11 @@ class MainWindow(QMainWindow):
         region_layout.addWidget(self.region_length_slider)
 
         region_output_header = QHBoxLayout()
-        region_output_title = QLabel("OUTPUT POSITION")
-        region_output_title.setObjectName("sectionTitle")
+        self.region_output_title = QLabel("INSERT POSITION IN A")
+        self.region_output_title.setObjectName("sectionTitle")
         self.region_output_label = QLabel("Chunk 1")
         self.region_output_label.setObjectName("settingValue")
-        region_output_header.addWidget(region_output_title)
+        region_output_header.addWidget(self.region_output_title)
         region_output_header.addStretch()
         region_output_header.addWidget(self.region_output_label)
         region_layout.addLayout(region_output_header)
@@ -806,7 +832,6 @@ class MainWindow(QMainWindow):
             self._on_region_output_changed
         )
         region_layout.addWidget(self.region_output_slider)
-        self.region_controls.setVisible(False)
         fader_layout.addWidget(self.region_controls)
 
         self.duration_controls = QWidget()
@@ -909,7 +934,7 @@ class MainWindow(QMainWindow):
         region_preview_row.addStretch()
         self.region_preview_button = QPushButton("Preview B region")
         self.region_preview_button.clicked.connect(self._toggle_region_preview)
-        self.region_preview_button.setVisible(False)
+        self.region_preview_button.setVisible(True)
         self.region_preview_button.setEnabled(False)
         region_preview_row.addWidget(self.region_preview_button)
         fader_layout.addLayout(region_preview_row)
@@ -1052,11 +1077,14 @@ class MainWindow(QMainWindow):
         self.interleave_timeline.set_settings(self._settings())
         self._refresh_actions()
 
-    def _on_region_source_changed(self, chunk_number: int) -> None:
+    def _on_region_source_changed(self, position_step: int) -> None:
         if self._preview_target == "region-B":
             self._stop_preview(wait=True)
-        self._region_b_source_slot = chunk_number - 1
-        self.region_source_label.setText(f"Chunk {chunk_number}")
+        step_ms = ACELP_FRAME_MS if self._stage == "acelp" else 1
+        self._region_b_source_ms = position_step * step_ms
+        self.region_source_label.setText(
+            _format_position_ms(self._region_b_source_ms)
+        )
         if self._mode == "region":
             self.interleave_timeline.set_settings(self._settings())
 
@@ -1088,6 +1116,8 @@ class MainWindow(QMainWindow):
         self.first_alternate_title.setText(
             f"FIRST {alternate} CHUNK POSITION"
         )
+        if starts_with_b:
+            self._set_first_alternate_slot(self._b_chunks_per_occurrence)
         self._pattern_changed()
 
     def _on_first_alternate_changed(self, chunk_number: int) -> None:
@@ -1098,7 +1128,21 @@ class MainWindow(QMainWindow):
     def _on_burst_size_changed(self, chunks: int) -> None:
         self._b_chunks_per_occurrence = chunks
         self.burst_size_label.setText(_format_chunk_count(chunks))
+        if self._starts_with == "B":
+            self._set_first_alternate_slot(chunks)
         self._pattern_changed()
+
+    def _set_first_alternate_slot(self, slot_index: int) -> None:
+        self._first_alternate_slot = slot_index
+        self.first_alternate_slider.blockSignals(True)
+        self.first_alternate_slider.setValue(slot_index + 1)
+        self.first_alternate_slider.blockSignals(False)
+        label = (
+            f"Chunk {slot_index + 1}"
+            if slot_index + 1 <= self.first_alternate_slider.maximum()
+            else "After output"
+        )
+        self.first_alternate_label.setText(label)
 
     def _pattern(self) -> InterleavePattern:
         return InterleavePattern(
@@ -1110,7 +1154,7 @@ class MainWindow(QMainWindow):
 
     def _region(self) -> RegionInsert:
         return RegionInsert(
-            b_source_slot=self._region_b_source_slot,
+            b_source_ms=self._region_b_source_ms,
             output_slot=self._region_output_slot,
             length_slots=self._region_length_slots,
             silence_after_b_end=self._region_silence_after_b_end,
@@ -1327,10 +1371,13 @@ class MainWindow(QMainWindow):
         self.region_silence_checkbox.blockSignals(True)
 
         if self._engine is None:
-            self._region_b_source_slot = 0
+            self._region_b_source_ms = 0
             self._region_output_slot = 0
             self._region_length_slots = 1
-            for control in controls:
+            self.region_source_slider.setRange(0, 0)
+            self.region_source_slider.setValue(0)
+            self.region_source_slider.setEnabled(False)
+            for control in (self.region_length_slider, self.region_output_slider):
                 control.setRange(1, 1)
                 control.setValue(1)
                 control.setEnabled(False)
@@ -1343,23 +1390,41 @@ class MainWindow(QMainWindow):
             )
             if self._region_silence_after_b_end:
                 max_length = output_chunks - self._region_output_slot
-                max_source_start = source_chunks - 1
             else:
                 max_length = source_chunks
                 self._region_length_slots = min(
                     max(1, self._region_length_slots), max_length
                 )
-                max_source_start = max(
-                    0, source_chunks - self._region_length_slots
-                )
             self._region_length_slots = min(
                 max(1, self._region_length_slots), max_length
             )
-            self._region_b_source_slot = min(
-                max(0, self._region_b_source_slot), max_source_start
+            step_ms = ACELP_FRAME_MS if self._stage == "acelp" else 1
+            step_frames = max(
+                1, round(self._engine.sample_rate * step_ms / 1000.0)
             )
-            self.region_source_slider.setRange(1, max_source_start + 1)
-            self.region_source_slider.setValue(self._region_b_source_slot + 1)
+            if self._region_silence_after_b_end:
+                max_source_start_frame = max(0, self._engine.source_b.frames - 1)
+            else:
+                padded_source_frames = source_chunks * self._engine.slot_frames
+                region_frames = self._region_length_slots * self._engine.slot_frames
+                max_source_start_frame = max(
+                    0, padded_source_frames - region_frames
+                )
+            max_source_step = max_source_start_frame // step_frames
+            current_source_step = min(
+                max_source_step,
+                max(0, round(self._region_b_source_ms / step_ms)),
+            )
+            self._region_b_source_ms = current_source_step * step_ms
+            self.region_source_slider.setRange(0, max_source_step)
+            self.region_source_slider.setSingleStep(1)
+            self.region_source_slider.setPageStep(
+                10 if self._stage == "acelp" else 100
+            )
+            self.region_source_slider.setTickInterval(
+                10 if self._stage == "acelp" else 1000
+            )
+            self.region_source_slider.setValue(current_source_step)
             self.region_length_slider.setRange(1, max_length)
             self.region_length_slider.setValue(self._region_length_slots)
             self.region_output_slider.setRange(1, output_chunks)
@@ -1369,7 +1434,7 @@ class MainWindow(QMainWindow):
             self.region_silence_checkbox.setEnabled(True)
 
         self.region_source_label.setText(
-            f"Chunk {self._region_b_source_slot + 1}"
+            _format_position_ms(self._region_b_source_ms)
         )
         self.region_length_label.setText(
             _format_chunk_count(self._region_length_slots)
@@ -1523,7 +1588,7 @@ class MainWindow(QMainWindow):
             return
         samples = self._engine.source_region(
             "B",
-            self._region_b_source_slot,
+            self._region_b_source_ms,
             self._region_length_slots,
             self._region_silence_after_b_end,
         )

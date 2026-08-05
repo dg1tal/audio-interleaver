@@ -126,7 +126,7 @@ def test_region_insert_playback_uses_selected_b_source_window(monkeypatch):
 
     assert controller.start(
         engine,
-        lambda: RegionInsert(b_source_slot=1, output_slot=1, length_slots=1),
+        lambda: RegionInsert(b_source_ms=100, output_slot=1, length_slots=1),
     )
     assert finished.wait(2)
 

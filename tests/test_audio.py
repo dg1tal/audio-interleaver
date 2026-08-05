@@ -83,6 +83,30 @@ def test_burst_size_controls_chunks_per_occurrence(burst, expected):
     assert sources(pattern, 9) == expected
 
 
+@pytest.mark.parametrize(
+    ("burst", "expected"),
+    [(1, "BABABABAB"), (2, "BBABBABBA"), (3, "BBBABBBAB")],
+)
+def test_starting_b_occurrence_uses_the_configured_burst_size(burst, expected):
+    pattern = InterleavePattern(
+        fill=1.0,
+        starts_with="B",
+        b_chunks_per_occurrence=burst,
+    )
+
+    assert sources(pattern, 9) == expected
+
+
+def test_starting_b_burst_is_anchored_even_with_zero_optional_fill():
+    pattern = InterleavePattern(
+        fill=0.0,
+        starts_with="B",
+        b_chunks_per_occurrence=3,
+    )
+
+    assert sources(pattern, 8) == "BBBAAAAA"
+
+
 def test_start_source_and_first_alternate_position_control_the_prefix():
     start_a = InterleavePattern(
         fill=1.0, first_alternate_slot=3, b_chunks_per_occurrence=2
@@ -126,7 +150,7 @@ def test_source_region_returns_exact_whole_chunks_with_final_padding():
         smoothing_ms=0,
     )
 
-    region = engine.source_region("B", first_chunk=3, chunk_count=2)[:, 0]
+    region = engine.source_region("B", source_start_ms=300, chunk_count=2)[:, 0]
 
     np.testing.assert_allclose(region[:150], np.arange(300, 450, dtype=np.float32))
     np.testing.assert_allclose(region[150:], 0.0)
@@ -195,7 +219,7 @@ def test_region_insert_uses_independent_b_source_and_output_positions():
         slot_ms=100,
         smoothing_ms=0,
     )
-    settings = RegionInsert(b_source_slot=2, output_slot=1, length_slots=3)
+    settings = RegionInsert(b_source_ms=200, output_slot=1, length_slots=3)
 
     rendered = engine.render(settings)[:, 0].reshape(6, 100)
 
@@ -203,7 +227,7 @@ def test_region_insert_uses_independent_b_source_and_output_positions():
 
 
 def test_region_insert_is_clipped_only_by_the_output_timeline():
-    settings = RegionInsert(b_source_slot=0, output_slot=4, length_slots=3)
+    settings = RegionInsert(b_source_ms=0, output_slot=4, length_slots=3)
     assert "".join(select_source(index, 6, settings) for index in range(6)) == "AAAABB"
 
 
@@ -217,7 +241,7 @@ def test_region_insert_can_replace_chunks_after_b_ends_with_silence():
         smoothing_ms=0,
     )
     settings = RegionInsert(
-        b_source_slot=1,
+        b_source_ms=100,
         output_slot=1,
         length_slots=4,
         silence_after_b_end=True,
@@ -240,11 +264,23 @@ def test_source_region_can_pad_all_chunks_after_source_end():
     )
 
     region = engine.source_region(
-        "B", first_chunk=1, chunk_count=3, silence_after_end=True
+        "B", source_start_ms=100, chunk_count=3, silence_after_end=True
     )[:, 0]
 
     np.testing.assert_allclose(region[:50], 1.0)
     np.testing.assert_allclose(region[50:], 0.0)
+
+
+def test_region_insert_can_start_between_chunk_boundaries():
+    source_a = audio(np.zeros(400, dtype=np.float32))
+    source_b = audio(np.arange(400, dtype=np.float32) / 1000)
+    engine = AudioEngine(source_a, source_b, slot_ms=100, smoothing_ms=0)
+
+    rendered = engine.render(
+        RegionInsert(b_source_ms=35, output_slot=1, length_slots=2)
+    )[:, 0]
+
+    np.testing.assert_allclose(rendered[100:300], source_b.samples[35:235, 0])
 
 
 def test_final_partial_slot_is_preserved_and_padded_with_silence():

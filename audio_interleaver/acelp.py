@@ -188,7 +188,9 @@ class AcelpEngine:
         selected = source_id or self.source_for_slot(slot_index, settings)
         if isinstance(settings, RegionInsert):
             if selected == "B":
-                return settings.b_source_slot + slot_index - settings.output_slot
+                return self.source_start_frame_for_slot(
+                    slot_index, settings, selected
+                ) // self.slot_frames
             return slot_index
         if selected == "A":
             return slot_index
@@ -196,6 +198,29 @@ class AcelpEngine:
             self.source_for_slot(index, settings) == "B"
             for index in range(slot_index)
         )
+
+    def source_start_frame_for_slot(
+        self,
+        slot_index: int,
+        settings: InterleaveSettings,
+        source_id: SourceId | None = None,
+    ) -> int:
+        """Return the first source sample used by an output slot."""
+
+        selected = source_id or self.source_for_slot(slot_index, settings)
+        if isinstance(settings, RegionInsert) and selected == "B":
+            if settings.b_source_ms % ACELP_FRAME_MS:
+                raise ValueError("ACELP B source position must align to 30 ms")
+            region_start = settings.b_source_ms * ACELP_SAMPLE_RATE // 1000
+            return (
+                region_start
+                + (slot_index - settings.output_slot) * self.slot_frames
+            )
+        chunk_index = self.source_chunk_index_for_slot(
+            slot_index, settings, selected
+        )
+        actual_chunk = chunk_index % self.source_chunk_count(selected)
+        return actual_chunk * self.slot_frames
 
     def _chunk_float(self, source_id: SourceId, chunk_index: int) -> np.ndarray:
         source = self.source_a if source_id == "A" else self.source_b
@@ -214,36 +239,59 @@ class AcelpEngine:
             raise IndexError("output_slot_index is outside the output timeline")
         return self._chunk_float(source_id, chunk_index)
 
+    def preview_source_frames(
+        self,
+        source_id: SourceId,
+        source_start_frame: int,
+        output_slot_index: int,
+    ) -> np.ndarray:
+        if output_slot_index < 0 or output_slot_index >= self.slot_count:
+            raise IndexError("output_slot_index is outside the output timeline")
+        if source_start_frame < 0:
+            raise ValueError("source_start_frame must be non-negative")
+        source = self.source_a if source_id == "A" else self.source_b
+        result = np.zeros((self.slot_frames, 1), dtype=np.float32)
+        copied = min(self.slot_frames, max(0, source.frames - source_start_frame))
+        if copied:
+            result[:copied] = source.samples[
+                source_start_frame : source_start_frame + copied
+            ]
+        return result
+
     def source_region(
         self,
         source_id: SourceId,
-        first_chunk: int,
+        source_start_ms: int,
         chunk_count: int,
         silence_after_end: bool = False,
     ) -> np.ndarray:
-        if first_chunk < 0 or chunk_count < 1:
+        if source_start_ms < 0 or chunk_count < 1:
             raise ValueError("invalid source region")
-        if (
-            not silence_after_end
-            and first_chunk + chunk_count > self.source_chunk_count(source_id)
-        ):
+        if source_start_ms % ACELP_FRAME_MS:
+            raise ValueError("ACELP B source position must align to 30 ms")
+        source_start_frame = source_start_ms * ACELP_SAMPLE_RATE // 1000
+        length = chunk_count * self.slot_frames
+        padded_end = self.source_chunk_count(source_id) * self.slot_frames
+        if not silence_after_end and source_start_frame + length > padded_end:
             raise ValueError("source region extends beyond the available chunks")
-        return np.concatenate(
-            [
-                np.zeros((self.slot_frames, 1), dtype=np.float32)
-                if first_chunk + i >= self.source_chunk_count(source_id)
-                else self._chunk_float(source_id, first_chunk + i)
-                for i in range(chunk_count)
+        source = self.source_a if source_id == "A" else self.source_b
+        result = np.zeros((length, 1), dtype=np.float32)
+        copied = min(length, max(0, source.frames - source_start_frame))
+        if copied:
+            result[:copied] = source.samples[
+                source_start_frame : source_start_frame + copied
             ]
-        )
+        return result
 
     def _a_pcm(self) -> np.ndarray:
         padded = np.zeros(self.total_frames, dtype=np.float32)
         padded[: self.source_a.frames] = self.source_a.samples[:, 0]
         return _float_to_pcm16(padded)
 
-    def _b_chunk_pcm(self, chunk_index: int) -> np.ndarray:
-        return _float_to_pcm16(self._chunk_float("B", chunk_index)[:, 0])
+    def _b_source_pcm(self, source_start_frame: int) -> np.ndarray:
+        return _float_to_pcm16(
+            self.preview_source_frames("B", source_start_frame, 0)[:, 0]
+        )
 
     def render_symbols(
         self,
@@ -273,17 +321,10 @@ class AcelpEngine:
 
         b_chunks = []
         for slot in active:
-            chunk_index = self.source_chunk_index_for_slot(slot, settings, "B")
-            silent_b_tail = (
-                isinstance(settings, RegionInsert)
-                and settings.silence_after_b_end
-                and chunk_index >= self.source_chunk_count("B")
+            source_start_frame = self.source_start_frame_for_slot(
+                slot, settings, "B"
             )
-            b_chunks.append(
-                np.zeros(self.slot_frames, dtype=np.int16)
-                if silent_b_tail
-                else self._b_chunk_pcm(chunk_index)
-            )
+            b_chunks.append(self._b_source_pcm(source_start_frame))
         if cancel_event is not None and cancel_event.is_set():
             raise RenderingCancelled("Rendering was cancelled.")
         if b_encoder_mode == "one_stream":
