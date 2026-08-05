@@ -37,6 +37,11 @@ from .playback import PlaybackController
 
 SOURCE_A_COLOR = "#6ea8fe"
 SOURCE_B_COLOR = "#f08cba"
+DEFAULT_CHUNK_MS = 360
+DEFAULT_CROSSFADE_MS = 5
+MIN_CHUNK_MS = 50
+MAX_CHUNK_MS = 2000
+MAX_CROSSFADE_MS = 50
 
 
 def _format_time(seconds: float) -> str:
@@ -109,7 +114,7 @@ class InterleaveTimeline(QWidget):
         )
         self.setAccessibleName("Interleave preview")
         self.setAccessibleDescription(
-            "Two timeline lanes showing which 360 millisecond slots use source A or B."
+            "Two timeline lanes showing which audio chunks use source A or B."
         )
 
     @property
@@ -230,13 +235,15 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Audio Interleaver")
-        self.setMinimumSize(760, 650)
-        self.resize(860, 720)
+        self.setMinimumSize(760, 800)
+        self.resize(860, 820)
 
         self._source_a: LoadedAudio | None = None
         self._source_b: LoadedAudio | None = None
         self._engine: AudioEngine | None = None
         self._crossfader = 0.5
+        self._chunk_ms = DEFAULT_CHUNK_MS
+        self._crossfade_ms = DEFAULT_CROSSFADE_MS
         self._loop = False
         self._export_thread: threading.Thread | None = None
         self._export_cancel = threading.Event()
@@ -270,12 +277,19 @@ class MainWindow(QMainWindow):
 
         heading = QLabel("Audio Interleaver")
         heading.setObjectName("heading")
+        product_subheading = QLabel("A product of DG1TAL Compute Sweatshop")
+        product_subheading.setObjectName("productSubheading")
         subtitle = QLabel(
-            "Blend by selection: every 360 ms, choose a piece from A or B."
+            "Blend by selection: choose alternating chunks from source A or B."
         )
         subtitle.setObjectName("subtitle")
-        root.addWidget(heading)
-        root.addWidget(subtitle)
+        title_block = QVBoxLayout()
+        title_block.setSpacing(3)
+        title_block.addWidget(heading)
+        title_block.addWidget(product_subheading)
+        title_block.addSpacing(7)
+        title_block.addWidget(subtitle)
+        root.addLayout(title_block)
 
         cards = QHBoxLayout()
         cards.setSpacing(14)
@@ -321,14 +335,64 @@ class MainWindow(QMainWindow):
         fader_labels.addWidget(right_label)
         fader_layout.addLayout(fader_labels)
 
+        chunk_header = QHBoxLayout()
+        chunk_title = QLabel("CHUNK DURATION")
+        chunk_title.setObjectName("sectionTitle")
+        self.chunk_duration_label = QLabel(f"{self._chunk_ms} ms")
+        self.chunk_duration_label.setObjectName("settingValue")
+        chunk_header.addWidget(chunk_title)
+        chunk_header.addStretch()
+        chunk_header.addWidget(self.chunk_duration_label)
+        fader_layout.addSpacing(8)
+        fader_layout.addLayout(chunk_header)
+
+        self.chunk_duration_slider = QSlider(Qt.Orientation.Horizontal)
+        self.chunk_duration_slider.setRange(MIN_CHUNK_MS, MAX_CHUNK_MS)
+        self.chunk_duration_slider.setValue(self._chunk_ms)
+        self.chunk_duration_slider.setSingleStep(10)
+        self.chunk_duration_slider.setPageStep(50)
+        self.chunk_duration_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.chunk_duration_slider.setTickInterval(250)
+        self.chunk_duration_slider.valueChanged.connect(
+            self._on_chunk_duration_changed
+        )
+        fader_layout.addWidget(self.chunk_duration_slider)
+
+        transition_header = QHBoxLayout()
+        transition_title = QLabel("CHUNK CROSSFADE")
+        transition_title.setObjectName("sectionTitle")
+        self.crossfade_duration_label = QLabel(f"{self._crossfade_ms} ms")
+        self.crossfade_duration_label.setObjectName("settingValue")
+        transition_header.addWidget(transition_title)
+        transition_header.addStretch()
+        transition_header.addWidget(self.crossfade_duration_label)
+        fader_layout.addLayout(transition_header)
+
+        self.crossfade_duration_slider = QSlider(Qt.Orientation.Horizontal)
+        self.crossfade_duration_slider.setRange(0, MAX_CROSSFADE_MS)
+        self.crossfade_duration_slider.setValue(self._crossfade_ms)
+        self.crossfade_duration_slider.setSingleStep(1)
+        self.crossfade_duration_slider.setPageStep(5)
+        self.crossfade_duration_slider.setTickPosition(
+            QSlider.TickPosition.TicksBelow
+        )
+        self.crossfade_duration_slider.setTickInterval(5)
+        self.crossfade_duration_slider.setToolTip(
+            "Equal-power transition applied when consecutive chunks switch sources"
+        )
+        self.crossfade_duration_slider.valueChanged.connect(
+            self._on_crossfade_duration_changed
+        )
+        fader_layout.addWidget(self.crossfade_duration_slider)
+
         preview_header = QHBoxLayout()
         preview_title = QLabel("INTERLEAVE PREVIEW")
         preview_title.setObjectName("sectionTitle")
-        preview_detail = QLabel("Each block = 360 ms")
-        preview_detail.setObjectName("previewDetail")
+        self.preview_detail = QLabel(f"Each block = {self._chunk_ms} ms")
+        self.preview_detail.setObjectName("previewDetail")
         preview_header.addWidget(preview_title)
         preview_header.addStretch()
-        preview_header.addWidget(preview_detail)
+        preview_header.addWidget(self.preview_detail)
         fader_layout.addSpacing(8)
         fader_layout.addLayout(preview_header)
 
@@ -379,6 +443,7 @@ class MainWindow(QMainWindow):
             QMainWindow, QWidget#central { background: #15171c; }
             QLabel, QSlider { background: transparent; }
             QLabel#heading { font-size: 30px; font-weight: 700; }
+            QLabel#productSubheading { color: #7f8797; font-size: 11px; }
             QLabel#subtitle { color: #9ca3b2; font-size: 14px; }
             QFrame#sourceCard, QFrame#faderPanel, QFrame#transport {
                 background: #20232b; border: 1px solid #30343e; border-radius: 10px;
@@ -386,7 +451,7 @@ class MainWindow(QMainWindow):
             QLabel#sourceTitle, QLabel#sectionTitle { font-size: 11px; font-weight: 700; }
             QLabel#fileName { font-size: 16px; font-weight: 600; }
             QLabel#sourceDetails, QLabel#status { color: #9ca3b2; }
-            QLabel#mixLabel { color: #c4c8d2; font-weight: 600; }
+            QLabel#mixLabel, QLabel#settingValue { color: #c4c8d2; font-weight: 600; }
             QLabel#previewDetail { color: #858c9b; font-size: 11px; }
             QLabel#timeLabel { color: #b8bdc9; }
             QPushButton {
@@ -434,30 +499,55 @@ class MainWindow(QMainWindow):
             self._source_b = audio
             self.source_b_card.display_audio(audio)
 
+        self._rebuild_engine()
+
+    def _on_crossfader_changed(self, value: int) -> None:
+        self._crossfader = value / 100.0
+        self.mix_label.setText(f"A {100 - value}%  •  B {value}%")
+        self.interleave_timeline.set_crossfader(self._crossfader)
+
+    def _on_chunk_duration_changed(self, value: int) -> None:
+        self._chunk_ms = value
+        self.chunk_duration_label.setText(f"{value} ms")
+        self.preview_detail.setText(f"Each block = {value} ms")
+        self._configuration_changed()
+
+    def _on_crossfade_duration_changed(self, value: int) -> None:
+        self._crossfade_ms = value
+        self.crossfade_duration_label.setText(f"{value} ms")
+        self._configuration_changed()
+
+    def _configuration_changed(self) -> None:
+        self._stop_playback(wait=True, reset=True)
+        self._rebuild_engine()
+
+    def _rebuild_engine(self) -> None:
         try:
             self._engine = (
-                AudioEngine(self._source_a, self._source_b)
+                AudioEngine(
+                    self._source_a,
+                    self._source_b,
+                    slot_ms=self._chunk_ms,
+                    smoothing_ms=self._crossfade_ms,
+                )
                 if self._source_a is not None and self._source_b is not None
                 else None
             )
-        except AudioError as exc:
+        except (AudioError, ValueError) as exc:
             self._engine = None
             QMessageBox.critical(self, "Could not prepare audio", str(exc))
 
         if self._engine is not None:
             self.status_label.setText(
-                f"Ready • 360 ms slots • {_format_time(self._engine.duration)} output"
+                f"Ready • {self._chunk_ms} ms chunks • "
+                f"{self._crossfade_ms} ms crossfade • "
+                f"{_format_time(self._engine.duration)} output"
             )
         else:
             self.status_label.setText("Load the other WAV file to begin.")
         self.interleave_timeline.set_engine(self._engine)
         self._update_time(0.0)
         self._refresh_actions()
-
-    def _on_crossfader_changed(self, value: int) -> None:
-        self._crossfader = value / 100.0
-        self.mix_label.setText(f"A {100 - value}%  •  B {value}%")
-        self.interleave_timeline.set_crossfader(self._crossfader)
 
     def _on_loop_changed(self, checked: bool) -> None:
         self._loop = checked
@@ -475,7 +565,8 @@ class MainWindow(QMainWindow):
         ):
             self.play_button.setText("Stop")
             self.status_label.setText(
-                "Playing • crossfader changes apply at the next 360 ms boundary"
+                f"Playing • crossfader changes apply at the next "
+                f"{self._chunk_ms} ms boundary"
             )
 
     def _stop_playback(self, wait: bool = False, reset: bool = False) -> None:

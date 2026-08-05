@@ -121,6 +121,14 @@ def test_source_switch_has_equal_power_smoothing():
     np.testing.assert_allclose(second[5:], 1.0)
 
 
+def test_configurable_chunk_and_crossfade_durations():
+    engine = AudioEngine(audio(0.0), audio(1.0), slot_ms=250, smoothing_ms=20)
+
+    assert engine.slot_frames == 250
+    assert engine.smoothing_frames == 20
+    assert engine.slot_count == 4
+
+
 def test_wav_round_trip(tmp_path):
     path = tmp_path / "round-trip.wav"
     samples = np.column_stack(
@@ -143,4 +151,3 @@ def test_non_wav_and_empty_audio_are_rejected(tmp_path):
 
     with pytest.raises(AudioError, match="no audio frames"):
         LoadedAudio(np.empty((0, 1), dtype=np.float32), 1000)
-

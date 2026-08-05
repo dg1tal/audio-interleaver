@@ -20,7 +20,7 @@ class PlaybackController:
     """Stream rendered slots on a worker thread.
 
     The crossfader provider is sampled immediately before each slot is rendered,
-    which makes UI changes take effect on the next 360 ms boundary.
+    which makes UI changes take effect at the next chunk boundary.
     """
 
     def __init__(

@@ -1,8 +1,8 @@
 # Audio Interleaver
 
 Audio Interleaver is a desktop application that switches between two WAV files
-on a shared timeline. The output is divided into fixed 360 ms slots, and the
-crossfader controls how many slots come from each source:
+on a shared timeline. The output is divided into configurable chunks, and the
+selection crossfader controls how many chunks come from each source:
 
 - **A only:** every slot uses source A.
 - **Center:** slots alternate A, B, A, B.
@@ -12,8 +12,9 @@ crossfader controls how many slots come from each source:
 
 This is a chunk-selection crossfader, not a conventional volume mixer. When
 the sources have different lengths, the shorter source loops and the result
-ends with the longer source. A 5 ms equal-power transition smooths each source
-change.
+ends with the longer source. Chunk duration is adjustable from 50 to 2000 ms.
+An equal-power transition, adjustable from 0 to 50 ms (5 ms by default),
+smooths each source change.
 
 ## Requirements
 
@@ -76,12 +77,13 @@ python -m pip install -e .
 audio-interleaver
 ```
 
-Load source A and source B, move the crossfader, and press **Play**. Slider
-changes made during playback take effect when the next 360 ms slot starts. Use
-the **Loop** checkbox to restart the complete result whenever playback reaches
-the end. Turn it off during playback to stop looping after the current pass. Use
-**Export WAV…** to render a complete file using a snapshot of the current
-crossfader position.
+Load source A and source B, choose the chunk duration and transition crossfade,
+move the selection crossfader, and press **Play**. Selection changes made during
+playback take effect when the next chunk starts. Changing either duration stops
+playback and rebuilds the timeline. Use the **Loop** checkbox to restart the
+complete result whenever playback reaches the end. Turn it off during playback
+to stop looping after the current pass. Use **Export WAV…** to render a complete
+file using a snapshot of the current settings.
 
 ## Test
 
