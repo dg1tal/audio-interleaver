@@ -64,7 +64,7 @@ contains 138 little-endian 16-bit words: one bad-frame indicator followed by
 
 ## Requirements
 
-- Python 3.11 or newer
+- Python 3.12 or newer
 - A supported C compiler
 - An audio output device
 - WAV input files
