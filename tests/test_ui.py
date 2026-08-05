@@ -17,7 +17,6 @@ def test_window_starts_waiting_for_two_sources(qtbot):
     assert not window.export_button.isEnabled()
     assert window.crossfader.value() == 50
     assert window.chunk_duration_slider.value() == 360
-    assert window.crossfade_duration_slider.value() == 5
     assert not window.loop_checkbox.isChecked()
 
 
@@ -32,7 +31,7 @@ def test_loop_checkbox_updates_playback_mode(qtbot):
 
 def test_interleave_timeline_tracks_slot_selection_and_position(qtbot):
     source = LoadedAudio(np.zeros((1440, 1), dtype=np.float32), 1000)
-    engine = AudioEngine(source, source, smoothing_ms=0)
+    engine = AudioEngine(source, source)
     timeline = InterleaveTimeline()
     qtbot.addWidget(timeline)
 
@@ -50,7 +49,7 @@ def test_crossfader_updates_interleave_preview(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
     source = LoadedAudio(np.zeros((1080, 1), dtype=np.float32), 1000)
-    window._engine = AudioEngine(source, source, smoothing_ms=0)
+    window._engine = AudioEngine(source, source)
     window.interleave_timeline.set_engine(window._engine)
 
     window.crossfader.setValue(100)
@@ -67,11 +66,8 @@ def test_duration_sliders_rebuild_engine_and_preview(qtbot):
     window._rebuild_engine()
 
     window.chunk_duration_slider.setValue(250)
-    window.crossfade_duration_slider.setValue(20)
 
     assert window._engine is not None
     assert window._engine.slot_ms == 250
-    assert window._engine.smoothing_ms == 20
     assert window._engine.slot_count == 4
     assert window.preview_detail.text() == "Each block = 250 ms"
-    assert window.crossfade_duration_label.text() == "20 ms"

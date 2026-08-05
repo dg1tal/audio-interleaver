@@ -1,4 +1,4 @@
-"""Audio loading, normalization, slot selection, and offline rendering."""
+"""Audio loading, normalization, chunk selection, and offline rendering."""
 
 from __future__ import annotations
 
@@ -124,18 +124,15 @@ def _resample(samples: np.ndarray, source_rate: int, target_rate: int) -> np.nda
 
 @dataclass(slots=True)
 class AudioEngine:
-    """Normalized pair of sources and their shared interleave timeline."""
+    """Normalized pair of sources whose chunks are placed into output slots."""
 
     source_a: LoadedAudio
     source_b: LoadedAudio
     slot_ms: float = 360.0
-    smoothing_ms: float = 5.0
 
     def __post_init__(self) -> None:
         if self.slot_ms <= 0:
             raise ValueError("slot_ms must be positive")
-        if self.smoothing_ms < 0 or self.smoothing_ms >= self.slot_ms:
-            raise ValueError("smoothing_ms must be non-negative and shorter than a slot")
 
         target_rate = max(self.source_a.sample_rate, self.source_b.sample_rate)
         target_channels = max(self.source_a.channels, self.source_b.channels)
@@ -169,10 +166,6 @@ class AudioEngine:
         return max(1, round(self.sample_rate * self.slot_ms / 1000.0))
 
     @property
-    def smoothing_frames(self) -> int:
-        return max(0, round(self.sample_rate * self.smoothing_ms / 1000.0))
-
-    @property
     def slot_count(self) -> int:
         return math.ceil(self.total_frames / self.slot_frames)
 
@@ -182,11 +175,13 @@ class AudioEngine:
     def _source(self, source_id: SourceId) -> LoadedAudio:
         return self.source_a if source_id == "A" else self.source_b
 
-    def _timeline_segment(self, source_id: SourceId, start: int, length: int) -> np.ndarray:
+    def _chunk(self, source_id: SourceId, chunk_index: int, length: int) -> np.ndarray:
+        """Read the next independent chunk from a source, looping if necessary."""
+
         source = self._source(source_id).samples
         result = np.empty((length, self.channels), dtype=np.float32)
         written = 0
-        position = start % len(source)
+        position = (chunk_index * self.slot_frames) % len(source)
         while written < length:
             available = min(length - written, len(source) - position)
             result[written : written + available] = source[position : position + available]
@@ -198,26 +193,23 @@ class AudioEngine:
         self,
         slot_index: int,
         crossfader: float,
-        previous_source: SourceId | None = None,
+        source_chunk_index: int | None = None,
     ) -> tuple[np.ndarray, SourceId]:
-        """Render one slot, smoothing a source change at its leading edge."""
+        """Render one slot from the selected source's next sequential chunk."""
 
         if slot_index < 0 or slot_index >= self.slot_count:
             raise IndexError("slot_index is outside the output timeline")
         start = slot_index * self.slot_frames
         length = min(self.slot_frames, self.total_frames - start)
         source_id = self.source_for_slot(slot_index, crossfader)
-        result = self._timeline_segment(source_id, start, length)
-
-        fade_length = min(self.smoothing_frames, length)
-        if previous_source is not None and previous_source != source_id and fade_length >= 2:
-            outgoing = self._timeline_segment(previous_source, start, fade_length)
-            angles = np.linspace(0.0, math.pi / 2.0, fade_length, dtype=np.float32)
-            outgoing_gain = np.cos(angles)[:, np.newaxis]
-            incoming_gain = np.sin(angles)[:, np.newaxis]
-            result[:fade_length] = outgoing * outgoing_gain + result[:fade_length] * incoming_gain
-            np.clip(result[:fade_length], -1.0, 1.0, out=result[:fade_length])
-        return result, source_id
+        if source_chunk_index is None:
+            source_chunk_index = sum(
+                self.source_for_slot(index, crossfader) == source_id
+                for index in range(slot_index)
+            )
+        if source_chunk_index < 0:
+            raise ValueError("source_chunk_index must be non-negative")
+        return self._chunk(source_id, source_chunk_index, length), source_id
 
     def render(
         self,
@@ -228,13 +220,15 @@ class AudioEngine:
         """Render the complete output using a fixed crossfader snapshot."""
 
         output = np.empty((self.total_frames, self.channels), dtype=np.float32)
-        previous_source: SourceId | None = None
+        source_chunk_indices: dict[SourceId, int] = {"A": 0, "B": 0}
         for slot_index in range(self.slot_count):
             if cancel_event is not None and cancel_event.is_set():
                 raise RenderingCancelled("Rendering was cancelled.")
-            slot, previous_source = self.render_slot(
-                slot_index, crossfader, previous_source
+            source_id = self.source_for_slot(slot_index, crossfader)
+            slot, _ = self.render_slot(
+                slot_index, crossfader, source_chunk_indices[source_id]
             )
+            source_chunk_indices[source_id] += 1
             start = slot_index * self.slot_frames
             output[start : start + len(slot)] = slot
             if progress is not None:

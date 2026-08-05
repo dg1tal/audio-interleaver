@@ -42,16 +42,16 @@ def test_crossfader_values_are_clamped():
     assert select_source(3, 4) == "B"
 
 
-def test_center_uses_shared_timeline_slots():
-    source_a = audio(np.full(1000, 0.1))
-    source_b = audio(np.full(1000, 0.8))
-    engine = AudioEngine(source_a, source_b, smoothing_ms=0)
+def test_center_uses_each_sources_sequential_chunks():
+    source_a = audio(np.arange(1000, dtype=np.float32))
+    source_b = audio(np.arange(1000, dtype=np.float32) + 2000)
+    engine = AudioEngine(source_a, source_b)
 
     rendered = engine.render(0.5)[:, 0]
 
-    np.testing.assert_allclose(rendered[:360], 0.8)
-    np.testing.assert_allclose(rendered[360:720], 0.1)
-    np.testing.assert_allclose(rendered[720:], 0.8)
+    np.testing.assert_allclose(rendered[:360], source_b.samples[:360, 0])
+    np.testing.assert_allclose(rendered[360:720], source_a.samples[:360, 0])
+    np.testing.assert_allclose(rendered[720:], source_b.samples[360:640, 0])
 
 
 def test_endpoints_select_only_one_source():
@@ -66,7 +66,7 @@ def test_endpoints_select_only_one_source():
 def test_shorter_source_loops_until_longer_source_ends():
     source_a = audio(np.arange(500, dtype=np.float32) / 1000)
     source_b = audio(np.zeros(1200, dtype=np.float32))
-    engine = AudioEngine(source_a, source_b, smoothing_ms=0)
+    engine = AudioEngine(source_a, source_b)
 
     rendered = engine.render(0.0)[:, 0]
 
@@ -80,7 +80,6 @@ def test_final_partial_slot_is_preserved():
     engine = AudioEngine(
         audio(np.zeros(850, dtype=np.float32)),
         audio(np.ones(800, dtype=np.float32)),
-        smoothing_ms=0,
     )
 
     assert engine.slot_count == 3
@@ -107,25 +106,20 @@ def test_sample_rates_and_channels_are_normalized():
     )
 
 
-def test_source_switch_has_equal_power_smoothing():
-    engine = AudioEngine(audio(0.0), audio(1.0), smoothing_ms=5)
+def test_source_switch_is_a_hard_chunk_boundary():
+    engine = AudioEngine(audio(0.0), audio(1.0))
 
-    first, previous = engine.render_slot(0, 0.5)
-    second, _ = engine.render_slot(1, 0.5, previous)
+    first, _ = engine.render_slot(0, 0.5)
+    second, _ = engine.render_slot(1, 0.5)
 
     assert np.all(first == 1.0)
-    transition = second[:5, 0]
-    assert transition[0] == pytest.approx(1.0)
-    assert transition[-1] == pytest.approx(0.0, abs=1e-7)
-    assert np.all(np.diff(transition) <= 0)
-    np.testing.assert_allclose(second[5:], 0.0)
+    assert np.all(second == 0.0)
 
 
-def test_configurable_chunk_and_crossfade_durations():
-    engine = AudioEngine(audio(0.0), audio(1.0), slot_ms=250, smoothing_ms=20)
+def test_configurable_chunk_duration():
+    engine = AudioEngine(audio(0.0), audio(1.0), slot_ms=250)
 
     assert engine.slot_frames == 250
-    assert engine.smoothing_frames == 20
     assert engine.slot_count == 4
 
 
