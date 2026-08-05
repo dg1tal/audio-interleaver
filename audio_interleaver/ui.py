@@ -757,7 +757,7 @@ class MainWindow(QMainWindow):
         region_length_title.setObjectName("sectionTitle")
         self.region_length_label = QLabel("1 chunk")
         self.region_length_label.setObjectName("settingValue")
-        self.region_silence_checkbox = QCheckBox("Silence after B ends")
+        self.region_silence_checkbox = QCheckBox("Add silence after B ends")
         self.region_silence_checkbox.setEnabled(False)
         self.region_silence_checkbox.toggled.connect(
             self._on_region_silence_changed

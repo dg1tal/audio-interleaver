@@ -211,6 +211,7 @@ def test_region_silence_checkbox_extends_length_without_adding_a_row(qtbot):
 
     assert window.region_length_slider.maximum() == 3
     assert window.region_silence_checkbox.isEnabled()
+    assert window.region_silence_checkbox.text() == "Add silence after B ends"
     region_height = window.region_controls.sizeHint().height()
 
     window.region_output_slider.setValue(3)
