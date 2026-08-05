@@ -10,6 +10,7 @@ import sounddevice as sd
 from .audio import AudioEngine, SourceId
 
 CrossfaderProvider = Callable[[], float]
+LoopProvider = Callable[[], bool]
 PositionCallback = Callable[[float], None]
 FinishedCallback = Callable[[bool], None]
 ErrorCallback = Callable[[str], None]
@@ -41,14 +42,19 @@ class PlaybackController:
         with self._lock:
             return self._thread is not None and self._thread.is_alive()
 
-    def start(self, engine: AudioEngine, crossfader: CrossfaderProvider) -> bool:
+    def start(
+        self,
+        engine: AudioEngine,
+        crossfader: CrossfaderProvider,
+        loop: LoopProvider | None = None,
+    ) -> bool:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return False
             self._stop_event.clear()
             self._thread = threading.Thread(
                 target=self._run,
-                args=(engine, crossfader),
+                args=(engine, crossfader, loop),
                 name="audio-playback",
                 daemon=True,
             )
@@ -68,9 +74,13 @@ class PlaybackController:
         if wait and thread is not None and thread is not threading.current_thread():
             thread.join(timeout=2.0)
 
-    def _run(self, engine: AudioEngine, crossfader: CrossfaderProvider) -> None:
+    def _run(
+        self,
+        engine: AudioEngine,
+        crossfader: CrossfaderProvider,
+        loop: LoopProvider | None,
+    ) -> None:
         natural_finish = False
-        previous_source: SourceId | None = None
         try:
             stream = sd.OutputStream(
                 samplerate=engine.sample_rate,
@@ -80,21 +90,28 @@ class PlaybackController:
             with self._lock:
                 self._stream = stream
             stream.start()
-            for slot_index in range(engine.slot_count):
+            while not self._stop_event.is_set():
+                previous_source: SourceId | None = None
+                for slot_index in range(engine.slot_count):
+                    if self._stop_event.is_set():
+                        break
+                    slot, previous_source = engine.render_slot(
+                        slot_index, crossfader(), previous_source
+                    )
+                    stream.write(slot)
+                    if self._stop_event.is_set():
+                        break
+                    played_frames = min(
+                        (slot_index + 1) * engine.slot_frames, engine.total_frames
+                    )
+                    self._on_position(played_frames / engine.sample_rate)
                 if self._stop_event.is_set():
                     break
-                slot, previous_source = engine.render_slot(
-                    slot_index, crossfader(), previous_source
-                )
-                stream.write(slot)
-                if self._stop_event.is_set():
-                    break
-                played_frames = min(
-                    (slot_index + 1) * engine.slot_frames, engine.total_frames
-                )
-                self._on_position(played_frames / engine.sample_rate)
-            else:
+                if loop is not None and loop():
+                    self._on_position(0.0)
+                    continue
                 natural_finish = True
+                break
         except Exception as exc:  # PortAudio exposes several environment-specific errors.
             if not self._stop_event.is_set():
                 self._on_error(f"Playback failed: {exc}")
@@ -110,4 +127,3 @@ class PlaybackController:
             with self._lock:
                 self._thread = None
             self._on_finished(natural_finish)
-

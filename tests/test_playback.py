@@ -56,3 +56,29 @@ def test_crossfader_is_sampled_before_each_playback_slot(monkeypatch):
     assert natural == [True]
     assert errors == []
 
+
+def test_loop_replays_the_complete_result(monkeypatch):
+    FakeOutputStream.instances.clear()
+    monkeypatch.setattr("audio_interleaver.playback.sd.OutputStream", FakeOutputStream)
+    source_a = LoadedAudio(np.full((720, 1), 0.1, dtype=np.float32), 1000)
+    source_b = LoadedAudio(np.full((720, 1), 0.9, dtype=np.float32), 1000)
+    engine = AudioEngine(source_a, source_b, smoothing_ms=0)
+    loop_values = iter((True, False))
+    positions = []
+    finished = threading.Event()
+    natural = []
+    controller = PlaybackController(
+        on_position=positions.append,
+        on_finished=lambda did_finish: (natural.append(did_finish), finished.set()),
+        on_error=lambda _message: None,
+    )
+
+    assert controller.start(engine, lambda: 0.5, lambda: next(loop_values))
+    assert finished.wait(2)
+
+    writes = FakeOutputStream.instances[-1].writes
+    assert len(writes) == 4
+    np.testing.assert_allclose(writes[0], writes[2])
+    np.testing.assert_allclose(writes[1], writes[3])
+    assert positions == [0.36, 0.72, 0.0, 0.36, 0.72]
+    assert natural == [True]

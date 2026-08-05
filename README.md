@@ -78,6 +78,8 @@ audio-interleaver
 
 Load source A and source B, move the crossfader, and press **Play**. Slider
 changes made during playback take effect when the next 360 ms slot starts. Use
+the **Loop** checkbox to restart the complete result whenever playback reaches
+the end. Turn it off during playback to stop looping after the current pass. Use
 **Export WAV…** to render a complete file using a snapshot of the current
 crossfader position.
 

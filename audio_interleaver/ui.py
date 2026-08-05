@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QCloseEvent, QFont
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -99,6 +100,7 @@ class MainWindow(QMainWindow):
         self._source_b: LoadedAudio | None = None
         self._engine: AudioEngine | None = None
         self._crossfader = 0.5
+        self._loop = False
         self._export_thread: threading.Thread | None = None
         self._export_cancel = threading.Event()
         self._exporting = False
@@ -195,10 +197,14 @@ class MainWindow(QMainWindow):
         self.play_button.clicked.connect(self._toggle_playback)
         self.export_button = QPushButton("Export WAV…")
         self.export_button.clicked.connect(self._export_wav)
+        self.loop_checkbox = QCheckBox("Loop")
+        self.loop_checkbox.setToolTip("Restart the complete result when playback ends")
+        self.loop_checkbox.toggled.connect(self._on_loop_changed)
         self.time_label = QLabel("0:00 / 0:00")
         self.time_label.setObjectName("timeLabel")
         controls.addWidget(self.play_button)
         controls.addWidget(self.export_button)
+        controls.addWidget(self.loop_checkbox)
         controls.addStretch()
         controls.addWidget(self.time_label)
         transport_layout.addLayout(controls)
@@ -240,6 +246,8 @@ class MainWindow(QMainWindow):
             QPushButton:disabled { color: #686d78; background: #252831; border-color: #30343c; }
             QPushButton#primaryButton { background: #4778d0; border-color: #5789e2; }
             QPushButton#primaryButton:hover { background: #5486df; }
+            QCheckBox { spacing: 7px; color: #c4c8d2; font-weight: 600; }
+            QCheckBox::indicator { width: 16px; height: 16px; }
             QSlider::groove:horizontal { height: 6px; background: #3b404b; border-radius: 3px; }
             QSlider::sub-page:horizontal { background: #6ea8fe; border-radius: 3px; }
             QSlider::handle:horizontal {
@@ -297,6 +305,9 @@ class MainWindow(QMainWindow):
         self._crossfader = value / 100.0
         self.mix_label.setText(f"A {100 - value}%  •  B {value}%")
 
+    def _on_loop_changed(self, checked: bool) -> None:
+        self._loop = checked
+
     def _toggle_playback(self) -> None:
         if self._playback.is_playing:
             self._stop_playback(reset=True)
@@ -305,7 +316,9 @@ class MainWindow(QMainWindow):
             return
         self.progress.setValue(0)
         self._update_time(0.0)
-        if self._playback.start(self._engine, lambda: self._crossfader):
+        if self._playback.start(
+            self._engine, lambda: self._crossfader, lambda: self._loop
+        ):
             self.play_button.setText("Stop")
             self.status_label.setText(
                 "Playing • crossfader changes apply at the next 360 ms boundary"
