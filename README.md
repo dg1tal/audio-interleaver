@@ -37,14 +37,25 @@ ACELP audio is mono at 8 kHz and uses 30 ms frames. Chunk durations therefore
 range from 30 to 1,980 ms in 30 ms steps. Typed values snap to the nearest legal
 duration. Crossfading is disabled.
 
-Source A is encoded as one complete stream. Only active B chunks are encoded:
+ACELP symbol insertion follows the pipeline shown in the application:
+
+1. Encode the complete source-A timeline as one continuous symbol stream.
+2. Encode only the active source-B chunks with an independent B encoder.
+3. Replace the selected A frames with the resulting B frames. This does not
+   change the output duration.
+4. Decode the complete mixed symbol stream continuously in one pass.
+
+The **B symbol encoding** setting controls only the independent B encoder:
 
 - **Continuous selected B chunks** preserves independent B encoder state across
   active chunks. It does not inherit A encoder state.
 - **Restart each B chunk** starts every active B chunk with fresh encoder state.
 
 For an extended Region Insert, zero PCM is encoded for the silent B tail using
-the selected encoder-state mode. Decoding always uses one continuous stream.
+the selected B mode. Because decoding is continuous, inserted B frames use the
+decoder state established by preceding output frames. When the stream returns
+to A, its original A symbols are decoded using state affected by B. These state
+mismatches are part of the simulated insertion effect.
 
 **Export WAV…** writes the rendered result. In ACELP mode, **Export ACELP
 symbols…** also writes an ETSI simulation-format `.spe` file. Each 30 ms frame
