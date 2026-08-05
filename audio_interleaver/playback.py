@@ -15,6 +15,7 @@ PositionCallback = Callable[[float], None]
 FinishedCallback = Callable[[bool], None]
 ErrorCallback = Callable[[str], None]
 PreviewFinishedCallback = Callable[[str, bool], None]
+PREVIEW_BLOCK_SECONDS = 0.02
 
 
 class PlaybackController:
@@ -132,6 +133,11 @@ class PlaybackController:
                 stream = self._stream
                 self._stream = None
             if stream is not None:
+                if natural_finish:
+                    try:
+                        stream.stop()
+                    except sd.PortAudioError:
+                        pass
                 try:
                     stream.close()
                 except sd.PortAudioError:
@@ -199,8 +205,13 @@ class AudioPreviewController:
             with self._lock:
                 self._stream = stream
             stream.start()
-            if not self._stop_event.is_set():
-                stream.write(audio.samples)
+            block_frames = max(
+                1, round(audio.sample_rate * PREVIEW_BLOCK_SECONDS)
+            )
+            for start in range(0, audio.frames, block_frames):
+                if self._stop_event.is_set():
+                    break
+                stream.write(audio.samples[start : start + block_frames])
             natural_finish = not self._stop_event.is_set()
         except Exception as exc:  # PortAudio errors vary by host and device.
             if not self._stop_event.is_set():
@@ -210,6 +221,14 @@ class AudioPreviewController:
                 stream = self._stream
                 self._stream = None
             if stream is not None:
+                if natural_finish:
+                    try:
+                        # Blocking writes may return while the host still owns
+                        # buffered tail samples. stop() drains them; close()
+                        # alone is allowed to discard them on some backends.
+                        stream.stop()
+                    except sd.PortAudioError:
+                        pass
                 try:
                     stream.close()
                 except sd.PortAudioError:

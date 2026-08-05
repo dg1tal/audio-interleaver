@@ -20,14 +20,13 @@ replacement begins. The B source window always remains intact; only placement
 beyond the end of the output timeline clips the inserted region.
 
 The preview places source A's waveform above the interleave lanes and source
-B's waveform below them. Waveform portions used by the current pattern retain
-their source color; inactive portions remain visible in gray. Chunk boundaries,
-waveforms, and the playback marker share the same horizontal alignment. A
-source waveform begins at that source's first selected slot, so B sample zero
-aligns with the first inserted B chunk. The application header displays the
-current Git commit hash for preview and bug report identification. Packaged
-builds can provide it through the `AUDIO_INTERLEAVER_COMMIT` environment
-variable.
+B's waveform below them. Source A remains visible in gray beneath slots
+replaced by B. Source B appears only in active B slots, avoiding ghost waveform
+chunks in intervening A slots. Chunk boundaries, waveforms, and the playback
+marker share the same horizontal alignment. B sample zero aligns with the
+first inserted B chunk. The application header displays the current Git commit
+hash for preview and bug report identification. Packaged builds can provide it
+through the `AUDIO_INTERLEAVER_COMMIT` environment variable.
 
 Source A is the fixed output reference: a B insertion replaces the A material
 at that position rather than pausing A. Source B advances continuously through

@@ -63,7 +63,7 @@ def test_interleave_timeline_tracks_slot_selection_and_position(qtbot):
     assert timeline.position == 0.72
 
 
-def test_waveform_b_starts_at_its_first_selected_slot(qtbot):
+def test_waveform_b_appears_only_in_selected_slots_without_ghost_chunks(qtbot):
     source = LoadedAudio(np.zeros((2160, 1), dtype=np.float32), 1000)
     engine = AudioEngine(source, source)
     timeline = InterleaveTimeline()
@@ -73,7 +73,14 @@ def test_waveform_b_starts_at_its_first_selected_slot(qtbot):
     timeline.set_pattern(InterleavePattern(fill=1.0, first_alternate_slot=3))
 
     assert timeline.slot_sources == tuple("AAABAB")
-    assert timeline.waveform_chunk_indices("B") == (None, None, None, 0, 1, 1)
+    assert timeline.waveform_chunk_indices("B") == (
+        None,
+        None,
+        None,
+        0,
+        None,
+        1,
+    )
     assert timeline.waveform_chunk_indices("A") == (0, 1, 2, 3, 4, 5)
 
 

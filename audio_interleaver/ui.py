@@ -213,16 +213,13 @@ class InterleaveTimeline(QWidget):
                         else None
                     )
             else:
-                b_started = False
                 for index, selected_source in enumerate(self._slot_sources):
                     chunk_indices["A"].append(index)
-                    if selected_source == "B":
-                        b_started = True
                     chunk_indices["B"].append(
                         self._engine.source_chunk_index_for_slot(
                             index, self._settings, "B"
                         )
-                        if b_started
+                        if selected_source == "B"
                         else None
                     )
             self._waveform_chunk_indices = {

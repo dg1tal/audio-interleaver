@@ -20,6 +20,7 @@ class FakeOutputStream:
         self.kwargs = kwargs
         self.writes = []
         self.aborted = False
+        self.stopped = False
         self.instances.append(self)
 
     def start(self):
@@ -30,6 +31,9 @@ class FakeOutputStream:
 
     def abort(self):
         self.aborted = True
+
+    def stop(self):
+        self.stopped = True
 
     def close(self):
         pass
@@ -147,5 +151,51 @@ def test_audio_preview_controller_plays_the_supplied_buffer(monkeypatch):
 
     stream = FakeOutputStream.instances[-1]
     assert stream.kwargs["samplerate"] == 2000
-    np.testing.assert_allclose(stream.writes[0], source.samples)
+    np.testing.assert_allclose(np.concatenate(stream.writes), source.samples)
+    assert len(stream.writes[-1]) < len(stream.writes[0])
+    assert stream.stopped
     assert results == [("source-A", True)]
+
+
+class BlockingPreviewStream(FakeOutputStream):
+    first_write = threading.Event()
+    release_write = threading.Event()
+
+    def write(self, samples):
+        super().write(samples)
+        self.first_write.set()
+        self.release_write.wait(2)
+
+    def abort(self):
+        super().abort()
+        self.release_write.set()
+
+
+def test_audio_preview_stop_interrupts_playback_between_small_blocks(monkeypatch):
+    BlockingPreviewStream.instances.clear()
+    BlockingPreviewStream.first_write.clear()
+    BlockingPreviewStream.release_write.clear()
+    monkeypatch.setattr(
+        "audio_interleaver.playback.sd.OutputStream", BlockingPreviewStream
+    )
+    source = LoadedAudio(np.full((2000, 1), 0.4, dtype=np.float32), 1000)
+    finished = threading.Event()
+    results = []
+    controller = AudioPreviewController(
+        on_finished=lambda preview_id, natural: (
+            results.append((preview_id, natural)),
+            finished.set(),
+        ),
+        on_error=lambda _message: None,
+    )
+
+    assert controller.start(source, "source-A")
+    assert BlockingPreviewStream.first_write.wait(2)
+    controller.stop(wait=True)
+    assert finished.wait(2)
+
+    stream = BlockingPreviewStream.instances[-1]
+    assert stream.aborted
+    assert not stream.stopped
+    assert sum(len(block) for block in stream.writes) < source.frames
+    assert results == [("source-A", False)]
